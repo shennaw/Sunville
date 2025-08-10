@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<map version="1.10" tiledversion="1.11.2" orientation="orthogonal" renderorder="right-down" width="6" height="4" tilewidth="16" tileheight="16" infinite="0" nextlayerid="5" nextobjectid="1">
+ <editorsettings>
+  <export target="Lua Tileset/small-house.lua" format="lua"/>
+ </editorsettings>
+ <tileset firstgid="1" source="sunville.tsx"/>
+ <layer id="4" name="Tile Layer 2" width="6" height="4">
+  <data encoding="csv">
+0,0,0,0,0,0,
+0,0,0,0,2395,0,
+0,0,0,0,0,0,
+0,0,0,0,0,0
+</data>
+ </layer>
+ <layer id="1" name="Tile Layer 1" width="6" height="4">
+  <data encoding="csv">
+2128,2129,2129,2129,2129,2130,
+2192,2395,2395,2395,348,2194,
+2320,2321,2321,2321,2321,2322,
+2384,2449,2385,2513,2385,2386
+</data>
+ </layer>
+</map>

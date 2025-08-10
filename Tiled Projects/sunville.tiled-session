@@ -1,0 +1,79 @@
+{
+    "Map/SizeTest": {
+        "height": 4300,
+        "width": 2
+    },
+    "activeFile": "SCENE_MAIN_FARM.tmx",
+    "expandedProjectPaths": [
+        "."
+    ],
+    "fileStates": {
+        "SCENE_MAIN_FARM.tmx": {
+            "scale": 1.5,
+            "selectedLayer": 1,
+            "viewCenter": {
+                "x": 214.33333333333334,
+                "y": 159.66666666666663
+            }
+        },
+        "VERTICAL_MAIN_FARM.tmx": {
+            "scale": 1.5694791666666665,
+            "selectedLayer": 0,
+            "viewCenter": {
+                "x": 347.886108714409,
+                "y": 261.23315855843896
+            }
+        },
+        "big-tree.tmx": {
+            "scale": 2.2404166666666665,
+            "selectedLayer": 0,
+            "viewCenter": {
+                "x": 240.13390366375305,
+                "y": 159.79170541193974
+            }
+        },
+        "forest.tsx": {
+            "scaleInEditor": 1
+        },
+        "small-house.tmx": {
+            "scale": 2.2404166666666665,
+            "selectedLayer": 0,
+            "viewCenter": {
+                "x": 48.20531895108797,
+                "y": 31.913706527803612
+            }
+        },
+        "spr_tileset_sunnysideworld_forest_32px.tsx": {
+            "scaleInDock": 1,
+            "scaleInEditor": 1
+        },
+        "sunville.tsx": {
+            "scaleInDock": 1,
+            "scaleInEditor": 1
+        }
+    },
+    "last.exportedFilePath": "F:/Project Sunville/Sunville/Lua Tileset",
+    "last.imagePath": "F:/Project Sunville/Sunville/Sunnyside_World_Assets/Tileset",
+    "map.lastUsedExportFilter": "Lua files (*.lua)",
+    "map.lastUsedFormat": "tmx",
+    "map.tileHeight": 16,
+    "map.tileWidth": 16,
+    "openFiles": [
+        "SCENE_MAIN_FARM.tmx",
+        "sunville.tsx",
+        "small-house.tmx"
+    ],
+    "project": "sunville.tiled-project",
+    "recentFiles": [
+        "forest.tsx",
+        "spr_tileset_sunnysideworld_forest_32px.tsx",
+        "small-house.tmx",
+        "sunville.tsx",
+        "SCENE_MAIN_FARM.tmx"
+    ],
+    "tileset.lastUsedFormat": "tsx",
+    "tileset.tileSize": {
+        "height": 32,
+        "width": 32
+    }
+}
