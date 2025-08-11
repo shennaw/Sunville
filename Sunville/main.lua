@@ -2,10 +2,9 @@
 -- Refactored main game file using the new class-based architecture
 
 -- Load the new classes
-local DraggableObject = require("DraggableObject")
+local ActionableObject = require("ActionableObject")
 local ButtonManager = require("ButtonManager")
 local GameStateManager = require("GameStateManager")
-local SelectableObject = require("SelectableObject")
 
 local loadSucceeded = false
 local sceneMap = nil
@@ -62,16 +61,43 @@ local function round(x)
   return math.floor(x + 0.5)
 end
 
+local function checkNPCCollisionWithObjects(npcX, npcY, npcWidth, npcHeight, gameStateManager)
+  if not gameStateManager then return false end
+  
+  -- Convert NPC pixel position to tile coordinates for collision checking
+  local tileWidth = sceneMap.tilewidth or 16
+  local tileHeight = sceneMap.tileheight or 16
+  
+  -- Calculate the tile area the NPC would occupy
+  local npcLeft = math.floor(npcX / tileWidth)
+  local npcTop = math.floor(npcY / tileHeight)
+  local npcRight = math.floor((npcX + npcWidth - 1) / tileWidth)
+  local npcBottom = math.floor((npcY + npcHeight - 1) / tileHeight)
+  
+  -- Check collision with all actionable objects
+  for id, object in pairs(gameStateManager.actionableObjects) do
+    local objLeft = object.tileX
+    local objTop = object.tileY
+    local objRight = objLeft + object:getWidth() - 1
+    local objBottom = objTop + object:getHeight() - 1
+    
+    -- Check if NPC area overlaps with object area
+    if npcLeft <= objRight and npcRight >= objLeft and 
+       npcTop <= objBottom and npcBottom >= objTop then
+      return true, object -- Collision detected
+    end
+  end
+  
+  return false -- No collision
+end
+
 function love.update(dt)
   -- Update game state
   if gameStateManager then
     gameStateManager:updateDrag(dt)
   end
   
-  -- Update trees
-  for _, tree in ipairs(trees) do
-    tree:updateSelection(dt)
-  end
+  -- Trees are now handled by gameStateManager, no separate update needed
   
   -- Pause game logic when in grid mode (dragging mode)
   if gameStateManager and gameStateManager:isAnyObjectDragging() then
@@ -86,7 +112,28 @@ function love.update(dt)
       local dirs = {
         {x = 1, y = 0}, {x = -1, y = 0}, {x = 0, y = 1}, {x = 0, y = -1}, {x = 0, y = 0}
       }
-      local pick = dirs[love.math.random(#dirs)]
+      
+      -- Filter out directions that would immediately cause collisions
+      local validDirs = {}
+      for _, dir in ipairs(dirs) do
+        local testX = npc.x + dir.x * npc.speed * 0.1 -- Test 0.1 second ahead
+        local testY = npc.y + dir.y * npc.speed * 0.1
+        local worldW = sceneMap.width * sceneMap.tilewidth
+        local worldH = sceneMap.height * sceneMap.tileheight
+        testX = clamp(testX, 0, worldW - npc.width)
+        testY = clamp(testY, 0, worldH - npc.height)
+        
+        if not checkNPCCollisionWithObjects(testX, testY, npc.width, npc.height, gameStateManager) then
+          table.insert(validDirs, dir)
+        end
+      end
+      
+      -- If no valid directions, include stop (0,0) as an option
+      if #validDirs == 0 then
+        validDirs = {{x = 0, y = 0}}
+      end
+      
+      local pick = validDirs[love.math.random(#validDirs)]
       npc.dirX, npc.dirY = pick.x, pick.y
     end
 
@@ -101,7 +148,31 @@ function love.update(dt)
     newX = clamp(newX, 0, worldW - npc.width)
     newY = clamp(newY, 0, worldH - npc.height)
 
-    npc.x, npc.y = newX, newY
+    -- Check for collision with ActionableObjects
+    local wouldCollide = checkNPCCollisionWithObjects(newX, newY, npc.width, npc.height, gameStateManager)
+    
+    if not wouldCollide then
+      -- No collision, safe to move
+      npc.x, npc.y = newX, newY
+    else
+      -- Collision detected, try moving in only one direction at a time
+      local onlyX = npc.x + dx
+      local onlyY = npc.y + dy
+      
+      -- Try moving only horizontally
+      if not checkNPCCollisionWithObjects(onlyX, npc.y, npc.width, npc.height, gameStateManager) then
+        onlyX = clamp(onlyX, 0, worldW - npc.width)
+        npc.x = onlyX
+      -- Try moving only vertically
+      elseif not checkNPCCollisionWithObjects(npc.x, onlyY, npc.width, npc.height, gameStateManager) then
+        onlyY = clamp(onlyY, 0, worldH - npc.height)
+        npc.y = onlyY
+      else
+        -- Can't move in either direction, stop moving and pick a new direction
+        npc.dirX, npc.dirY = 0, 0
+        npc.changeDirCooldown = 0.1 -- Force direction change soon
+      end
+    end
 
     local moving = (npc.dirX ~= 0 or npc.dirY ~= 0)
     if npc.dirX > 0 then npc.facing = 1 elseif npc.dirX < 0 then npc.facing = -1 end
@@ -122,59 +193,6 @@ function love.update(dt)
         npc.idleFrame = npc.idleFrame % npc.idleCount + 1
       end
     end
-  end
-end
-
--- Helper function to draw a selectable object (like trees)
-function love.drawSelectableObject(object, tilesetImage, tilesetQuads, tilesetFirstGid, tileWidth, tileHeight, mapDrawOffsetX, mapDrawOffsetY, cornerTLImg, cornerTRImg, cornerBLImg, cornerBRImg)
-  if not object.mapData or not object.mapData.layers then return end
-  
-  for _, layer in ipairs(object.mapData.layers) do
-    if layer.type == "tilelayer" and layer.visible ~= false and layer.data then
-      local mapWidth = layer.width or object.mapData.width
-      local mapHeight = layer.height or object.mapData.height
-      for row = 0, mapHeight - 1 do
-        for col = 0, mapWidth - 1 do
-          local idx = row * mapWidth + col + 1
-          local gid = layer.data[idx] or 0
-          if gid ~= 0 then
-            local localId = gid - tilesetFirstGid
-            local quad = tilesetQuads[localId + 1]
-            if quad then
-              love.graphics.setColor(1, 1, 1, 1)
-              love.graphics.draw(
-                tilesetImage,
-                quad,
-                mapDrawOffsetX + (object.tileX + col) * tileWidth + (layer.offsetx or 0),
-                mapDrawOffsetY + (object.tileY + row) * tileHeight + (layer.offsety or 0)
-              )
-            end
-          end
-        end
-      end
-    end
-  end
-  
-  -- Draw selection corners if selected
-  if object.isSelected then
-    local hw = object:getWidth()
-    local hh = object:getHeight()
-    local px = mapDrawOffsetX + object.tileX * tileWidth
-    local py = mapDrawOffsetY + object.tileY * tileHeight
-    
-    -- Get animated offset for breathing effect
-    local animOffset = object:getSelectionCornerOffset()
-    
-    local function drawCorner(img, dx, dy)
-      if img then love.graphics.draw(img, px + dx, py + dy) end
-    end
-    love.graphics.setColor(1, 1, 1, 1)
-    
-    -- Apply outward animation to each corner
-    drawCorner(cornerTLImg, -2 - animOffset, -2 - animOffset)
-    if cornerTRImg then drawCorner(cornerTRImg, hw * tileWidth - cornerTRImg:getWidth() + 2 + animOffset, -2 - animOffset) end
-    if cornerBLImg then drawCorner(cornerBLImg, -2 - animOffset, hh * tileHeight - cornerBLImg:getHeight() + 2 + animOffset) end
-    if cornerBRImg then drawCorner(cornerBRImg, hw * tileWidth - cornerBRImg:getWidth() + 2 + animOffset, hh * tileHeight - cornerBRImg:getHeight() + 2 + animOffset) end
   end
 end
 
@@ -301,86 +319,9 @@ function love.mousepressed(x, y, button)
   -- Convert to tile coordinates
   local tileX, tileY = screenToTile(x, y)
   
-  -- First check tree selection
-  local treeClicked = false
-  for _, tree in ipairs(trees) do
-    if tree:isPointInside(tileX, tileY) then
-      -- Deselect all other trees
-      for _, otherTree in ipairs(trees) do
-        if otherTree ~= tree then
-          otherTree:cancelSelection()
-        end
-      end
-      -- Select this tree
-      tree:select(tileX, tileY)
-      treeClicked = true
-      break
-    end
-  end
-  
-  -- If no tree was clicked, deselect all trees and handle draggable objects
-  if not treeClicked then
-    for _, tree in ipairs(trees) do
-      tree:cancelSelection()
-    end
-    
-    -- Handle object selection/dragging
-    if gameStateManager then
-      gameStateManager:handleObjectClick(tileX, tileY)
-    end
-  end
-end
-
--- Helper function to draw a selectable object (like trees)
-function love.drawSelectableObject(object, tilesetImage, tilesetQuads, tilesetFirstGid, tileWidth, tileHeight, mapDrawOffsetX, mapDrawOffsetY, cornerTLImg, cornerTRImg, cornerBLImg, cornerBRImg)
-  if not object.mapData or not object.mapData.layers then return end
-  
-  for _, layer in ipairs(object.mapData.layers) do
-    if layer.type == "tilelayer" and layer.visible ~= false and layer.data then
-      local mapWidth = layer.width or object.mapData.width
-      local mapHeight = layer.height or object.mapData.height
-      for row = 0, mapHeight - 1 do
-        for col = 0, mapWidth - 1 do
-          local idx = row * mapWidth + col + 1
-          local gid = layer.data[idx] or 0
-          if gid ~= 0 then
-            local localId = gid - tilesetFirstGid
-            local quad = tilesetQuads[localId + 1]
-            if quad then
-              love.graphics.setColor(1, 1, 1, 1)
-              love.graphics.draw(
-                tilesetImage,
-                quad,
-                mapDrawOffsetX + (object.tileX + col) * tileWidth + (layer.offsetx or 0),
-                mapDrawOffsetY + (object.tileY + row) * tileHeight + (layer.offsety or 0)
-              )
-            end
-          end
-        end
-      end
-    end
-  end
-  
-  -- Draw selection corners if selected
-  if object.isSelected then
-    local hw = object:getWidth()
-    local hh = object:getHeight()
-    local px = mapDrawOffsetX + object.tileX * tileWidth
-    local py = mapDrawOffsetY + object.tileY * tileHeight
-    
-    -- Get animated offset for breathing effect
-    local animOffset = object:getSelectionCornerOffset()
-    
-    local function drawCorner(img, dx, dy)
-      if img then love.graphics.draw(img, px + dx, py + dy) end
-    end
-    love.graphics.setColor(1, 1, 1, 1)
-    
-    -- Apply outward animation to each corner
-    drawCorner(cornerTLImg, -2 - animOffset, -2 - animOffset)
-    if cornerTRImg then drawCorner(cornerTRImg, hw * tileWidth - cornerTRImg:getWidth() + 2 + animOffset, -2 - animOffset) end
-    if cornerBLImg then drawCorner(cornerBLImg, -2 - animOffset, hh * tileHeight - cornerBLImg:getHeight() + 2 + animOffset) end
-    if cornerBRImg then drawCorner(cornerBRImg, hw * tileWidth - cornerBRImg:getWidth() + 2 + animOffset, hh * tileHeight - cornerBRImg:getHeight() + 2 + animOffset) end
+  -- Handle object selection/dragging (now includes both houses and trees)
+  if gameStateManager then
+    gameStateManager:handleObjectClick(tileX, tileY)
   end
 end
 
@@ -594,7 +535,7 @@ function love.load()
     end
   end
 
-  -- Create some tree objects using SelectableObject
+  -- Create some tree objects using ActionableObject
   trees = {}
   if treeMap then
     -- Spawn trees at various locations
@@ -607,8 +548,8 @@ function love.load()
     }
     
     for i, pos in ipairs(treePositions) do
-      local tree = SelectableObject.new(treeMap, pos.x, pos.y, "Tree " .. i)
-      table.insert(trees, tree)
+      local tree = ActionableObject.new(treeMap, pos.x, pos.y, "Tree " .. i, "tree")
+      gameStateManager:addActionableObject("tree" .. i, tree)
     end
   end
   treeMask = nil
@@ -728,12 +669,12 @@ function love.load()
   print("  labelRightImg:", labelRightImg and "OK" or "FAILED")
   print("  handOpenImg:", handOpenImg and "OK" or "FAILED")
   
-  -- Create draggable objects
+  -- Create actionable objects (houses)
   if houseMap then
-    local house1 = DraggableObject.new(houseMap, 10, 6, "House 1")
-    local house2 = DraggableObject.new(houseMap, 15, 8, "House 2")
-    gameStateManager:addDraggableObject("house1", house1)
-    gameStateManager:addDraggableObject("house2", house2)
+    local house1 = ActionableObject.new(houseMap, 10, 6, "House 1", "house")
+    local house2 = ActionableObject.new(houseMap, 15, 8, "House 2", "house")
+    gameStateManager:addActionableObject("house1", house1)
+    gameStateManager:addActionableObject("house2", house2)
   end
   
   -- Override the getLabelImages and getIcons methods in GameStateManager
@@ -830,10 +771,7 @@ function love.draw()
         end
       end
 
-      -- Draw trees
-      for _, tree in ipairs(trees) do
-        love.drawSelectableObject(tree, tilesetImage, tilesetQuads, tilesetFirstGid, tileWidth, tileHeight, mapDrawOffsetX, mapDrawOffsetY, cornerTLImg, cornerTRImg, cornerBLImg, cornerBRImg)
-      end
+      -- Trees are now drawn with other actionable objects below
 
       -- Draw NPC after the map
       if npc then
@@ -860,12 +798,12 @@ function love.draw()
         end
       end
 
-                              -- Draw non-selected draggable objects first (under the overlay)
+                              -- Draw non-selected actionable objects first (under the overlay)
                         if gameStateManager then
-                          for id, object in pairs(gameStateManager.draggableObjects) do
+                          for id, object in pairs(gameStateManager.actionableObjects) do
                             -- Only draw objects that are NOT currently being dragged
                             if not object.isDragging then
-                              love.drawDraggableObject(object, tilesetImage, tilesetQuads, tilesetFirstGid, tileWidth, tileHeight, sceneMap, mapDrawOffsetX, mapDrawOffsetY, cornerTLImg, cornerTRImg, cornerBLImg, cornerBRImg)
+                              love.drawActionableObject(object, tilesetImage, tilesetQuads, tilesetFirstGid, tileWidth, tileHeight, sceneMap, mapDrawOffsetX, mapDrawOffsetY, cornerTLImg, cornerTRImg, cornerBLImg, cornerBRImg)
                             end
                           end
                         end
@@ -882,10 +820,10 @@ function love.draw()
 
                         -- Draw only the selected/dragging object above the dark overlay
                         if gameStateManager then
-                          for id, object in pairs(gameStateManager.draggableObjects) do
+                          for id, object in pairs(gameStateManager.actionableObjects) do
                             -- Only draw objects that ARE currently being dragged
                             if object.isDragging then
-                              love.drawDraggableObject(object, tilesetImage, tilesetQuads, tilesetFirstGid, tileWidth, tileHeight, sceneMap, mapDrawOffsetX, mapDrawOffsetY, cornerTLImg, cornerTRImg, cornerBLImg, cornerBRImg)
+                              love.drawActionableObject(object, tilesetImage, tilesetQuads, tilesetFirstGid, tileWidth, tileHeight, sceneMap, mapDrawOffsetX, mapDrawOffsetY, cornerTLImg, cornerTRImg, cornerBLImg, cornerBRImg)
                             end
                           end
                         end
@@ -934,14 +872,7 @@ function love.draw()
         end
       end
       
-      -- Show tree selection status
-      for i, tree in ipairs(trees) do
-        if tree.isSelected then
-          love.graphics.print(string.format("Selected: %s @ (%d,%d)", tree.name, tree.tileX, tree.tileY), 24, y)
-          y = y + 20
-          break
-        end
-      end
+      -- Selection status is now handled by the general object display above
     end
   else
     love.graphics.setColor(1, 0.7, 0.7)
@@ -954,61 +885,8 @@ function love.draw()
   end
 end
 
--- Helper function to draw a selectable object (like trees)
-function love.drawSelectableObject(object, tilesetImage, tilesetQuads, tilesetFirstGid, tileWidth, tileHeight, mapDrawOffsetX, mapDrawOffsetY, cornerTLImg, cornerTRImg, cornerBLImg, cornerBRImg)
-  if not object.mapData or not object.mapData.layers then return end
-  
-  for _, layer in ipairs(object.mapData.layers) do
-    if layer.type == "tilelayer" and layer.visible ~= false and layer.data then
-      local mapWidth = layer.width or object.mapData.width
-      local mapHeight = layer.height or object.mapData.height
-      for row = 0, mapHeight - 1 do
-        for col = 0, mapWidth - 1 do
-          local idx = row * mapWidth + col + 1
-          local gid = layer.data[idx] or 0
-          if gid ~= 0 then
-            local localId = gid - tilesetFirstGid
-            local quad = tilesetQuads[localId + 1]
-            if quad then
-              love.graphics.setColor(1, 1, 1, 1)
-              love.graphics.draw(
-                tilesetImage,
-                quad,
-                mapDrawOffsetX + (object.tileX + col) * tileWidth + (layer.offsetx or 0),
-                mapDrawOffsetY + (object.tileY + row) * tileHeight + (layer.offsety or 0)
-              )
-            end
-          end
-        end
-      end
-    end
-  end
-  
-  -- Draw selection corners if selected
-  if object.isSelected then
-    local hw = object:getWidth()
-    local hh = object:getHeight()
-    local px = mapDrawOffsetX + object.tileX * tileWidth
-    local py = mapDrawOffsetY + object.tileY * tileHeight
-    
-    -- Get animated offset for breathing effect
-    local animOffset = object:getSelectionCornerOffset()
-    
-    local function drawCorner(img, dx, dy)
-      if img then love.graphics.draw(img, px + dx, py + dy) end
-    end
-    love.graphics.setColor(1, 1, 1, 1)
-    
-    -- Apply outward animation to each corner
-    drawCorner(cornerTLImg, -2 - animOffset, -2 - animOffset)
-    if cornerTRImg then drawCorner(cornerTRImg, hw * tileWidth - cornerTRImg:getWidth() + 2 + animOffset, -2 - animOffset) end
-    if cornerBLImg then drawCorner(cornerBLImg, -2 - animOffset, hh * tileHeight - cornerBLImg:getHeight() + 2 + animOffset) end
-    if cornerBRImg then drawCorner(cornerBRImg, hw * tileWidth - cornerBRImg:getWidth() + 2 + animOffset, hh * tileHeight - cornerBRImg:getHeight() + 2 + animOffset) end
-  end
-end
-
--- Helper function to draw a draggable object
-function love.drawDraggableObject(object, tilesetImage, tilesetQuads, tilesetFirstGid, tileWidth, tileHeight, sceneMap, mapDrawOffsetX, mapDrawOffsetY, cornerTLImg, cornerTRImg, cornerBLImg, cornerBRImg)
+-- Helper function to draw an actionable object
+function love.drawActionableObject(object, tilesetImage, tilesetQuads, tilesetFirstGid, tileWidth, tileHeight, sceneMap, mapDrawOffsetX, mapDrawOffsetY, cornerTLImg, cornerTRImg, cornerBLImg, cornerBRImg)
   if not object.mapData or not object.mapData.layers then return end
   
   for _, layer in ipairs(object.mapData.layers) do
@@ -1145,58 +1023,5 @@ function love.drawDraggableObject(object, tilesetImage, tilesetQuads, tilesetFir
       love.graphics.print(text, textX, textY)
       love.graphics.setColor(1, 1, 1, 1)
     end
-  end
-end
-
--- Helper function to draw a selectable object (like trees)
-function love.drawSelectableObject(object, tilesetImage, tilesetQuads, tilesetFirstGid, tileWidth, tileHeight, mapDrawOffsetX, mapDrawOffsetY, cornerTLImg, cornerTRImg, cornerBLImg, cornerBRImg)
-  if not object.mapData or not object.mapData.layers then return end
-  
-  for _, layer in ipairs(object.mapData.layers) do
-    if layer.type == "tilelayer" and layer.visible ~= false and layer.data then
-      local mapWidth = layer.width or object.mapData.width
-      local mapHeight = layer.height or object.mapData.height
-      for row = 0, mapHeight - 1 do
-        for col = 0, mapWidth - 1 do
-          local idx = row * mapWidth + col + 1
-          local gid = layer.data[idx] or 0
-          if gid ~= 0 then
-            local localId = gid - tilesetFirstGid
-            local quad = tilesetQuads[localId + 1]
-            if quad then
-              love.graphics.setColor(1, 1, 1, 1)
-              love.graphics.draw(
-                tilesetImage,
-                quad,
-                mapDrawOffsetX + (object.tileX + col) * tileWidth + (layer.offsetx or 0),
-                mapDrawOffsetY + (object.tileY + row) * tileHeight + (layer.offsety or 0)
-              )
-            end
-          end
-        end
-      end
-    end
-  end
-  
-  -- Draw selection corners if selected
-  if object.isSelected then
-    local hw = object:getWidth()
-    local hh = object:getHeight()
-    local px = mapDrawOffsetX + object.tileX * tileWidth
-    local py = mapDrawOffsetY + object.tileY * tileHeight
-    
-    -- Get animated offset for breathing effect
-    local animOffset = object:getSelectionCornerOffset()
-    
-    local function drawCorner(img, dx, dy)
-      if img then love.graphics.draw(img, px + dx, py + dy) end
-    end
-    love.graphics.setColor(1, 1, 1, 1)
-    
-    -- Apply outward animation to each corner
-    drawCorner(cornerTLImg, -2 - animOffset, -2 - animOffset)
-    if cornerTRImg then drawCorner(cornerTRImg, hw * tileWidth - cornerTRImg:getWidth() + 2 + animOffset, -2 - animOffset) end
-    if cornerBLImg then drawCorner(cornerBLImg, -2 - animOffset, hh * tileHeight - cornerBLImg:getHeight() + 2 + animOffset) end
-    if cornerBRImg then drawCorner(cornerBRImg, hw * tileWidth - cornerBRImg:getWidth() + 2 + animOffset, hh * tileHeight - cornerBRImg:getHeight() + 2 + animOffset) end
   end
 end

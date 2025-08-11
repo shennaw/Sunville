@@ -1,16 +1,13 @@
 -- GameStateManager.lua
--- Manages the overall game state and coordinates between draggable objects and buttons
+-- Manages the overall game state and coordinates between actionable objects and buttons
 
 local GameStateManager = {}
 GameStateManager.__index = GameStateManager
 
--- Button type constants (defined locally to avoid dependency issues)
-local BUTTON_TYPE_SELECTION = "selection"
-local BUTTON_TYPE_DRAGGING = "dragging"
 
 function GameStateManager.new()
     local manager = {
-        draggableObjects = {},
+        actionableObjects = {},
         selectedObject = nil,
         draggingObject = nil,
         buttonManager = nil,
@@ -43,31 +40,45 @@ function GameStateManager:setMapScale(mapScale)
     self.mapScale = mapScale
 end
 
-function GameStateManager:addDraggableObject(id, object)
-    self.draggableObjects[id] = object
+function GameStateManager:addActionableObject(id, object)
+    self.actionableObjects[id] = object
     object:setCollisionMasks(self.waterMask, self.treeMask)
 end
 
-function GameStateManager:getDraggableObject(id)
-    return self.draggableObjects[id]
+function GameStateManager:removeActionableObject(id)
+    if self.actionableObjects[id] then
+        if self.selectedObject == self.actionableObjects[id] then
+            self.selectedObject = nil
+        end
+        if self.draggingObject == self.actionableObjects[id] then
+            self.draggingObject = nil
+        end
+        self.actionableObjects[id] = nil
+        return true
+    end
+    return false
 end
 
-function GameStateManager:getDraggableObjectAtPosition(tileX, tileY)
+function GameStateManager:getActionableObject(id)
+    return self.actionableObjects[id]
+end
+
+function GameStateManager:getActionableObjectAtPosition(tileX, tileY)
     -- Check objects in reverse order (top to bottom) so top objects are selected first
     local objectIds = {}
-    for id, _ in pairs(self.draggableObjects) do
+    for id, _ in pairs(self.actionableObjects) do
         table.insert(objectIds, id)
     end
     
     -- Sort by Y position (objects with higher Y are "on top")
     table.sort(objectIds, function(a, b)
-        local objA = self.draggableObjects[a]
-        local objB = self.draggableObjects[b]
+        local objA = self.actionableObjects[a]
+        local objB = self.actionableObjects[b]
         return objA.tileY > objB.tileY
     end)
     
     for _, id in ipairs(objectIds) do
-        local object = self.draggableObjects[id]
+        local object = self.actionableObjects[id]
         if object:isPointInside(tileX, tileY) then
             return object, id
         end
@@ -81,7 +92,7 @@ function GameStateManager:checkObjectIntersection(object, tileX, tileY)
     local objectWidth = object:getWidth()
     local objectHeight = object:getHeight()
     
-    for id, otherObject in pairs(self.draggableObjects) do
+    for id, otherObject in pairs(self.actionableObjects) do
         -- Skip the object itself
         if otherObject ~= object then
             -- Check if the two objects would intersect
@@ -108,11 +119,19 @@ function GameStateManager:isOriginalPosition(object, tileX, tileY)
     return tileX == object.originalTileX and tileY == object.originalTileY
 end
 
-function GameStateManager:selectObject(object, tileX, tileY)
-    -- Deselect any previously selected object
-    if self.selectedObject then
-        self.selectedObject:cancelSelection()
+function GameStateManager:deselectAllObjects()
+    -- Deselect ALL objects to ensure only one can be selected at a time
+    for id, obj in pairs(self.actionableObjects) do
+        if obj.isSelected then
+            obj:cancelSelection()
+        end
     end
+    self.selectedObject = nil
+end
+
+function GameStateManager:selectObject(object, tileX, tileY)
+    -- Deselect ALL objects first to ensure only one is selected at a time
+    self:deselectAllObjects()
     
     -- Select the new object
     if object and object:select(tileX, tileY) then
@@ -124,16 +143,38 @@ function GameStateManager:selectObject(object, tileX, tileY)
     return false
 end
 
-function GameStateManager:startDragging(object)
+function GameStateManager:performAction(object, action)
     if not object or not self.selectedObject or object ~= self.selectedObject then
         return false
     end
     
-    if object:startDragging() then
-        self.draggingObject = object
-        self.selectedObject = nil
-        self:updateButtonStates()
-        return true
+    if action == "move" and object:isDraggable() then
+        if object:startDragging() then
+            self.draggingObject = object
+            -- Clear all selections when starting to drag
+            self:deselectAllObjects()
+            self:updateButtonStates()
+            return true
+        end
+    else
+        -- Handle other actions like axe, water, pickaxe
+        local success = object:performAction(action, function(obj, actionType, success)
+            if success then
+                if actionType == "axe" or actionType == "pickaxe" then
+                    -- Remove the object from the game
+                    for id, gameObj in pairs(self.actionableObjects) do
+                        if gameObj == obj then
+                            self:removeActionableObject(id)
+                            break
+                        end
+                    end
+                end
+                -- Clear selection after any successful action
+                self:deselectAllObjects()
+                self:updateButtonStates()
+            end
+        end)
+        return success
     end
     
     return false
@@ -145,7 +186,7 @@ function GameStateManager:updateDrag(dt)
     end
     
     -- Update selection animations for all objects
-    for _, object in pairs(self.draggableObjects) do
+    for _, object in pairs(self.actionableObjects) do
         object:updateSelection(dt)
     end
 end
@@ -169,6 +210,8 @@ function GameStateManager:acceptDrag()
     
     if self.draggingObject:acceptPlacement() then
         self.draggingObject = nil
+        -- Ensure all objects are deselected after drag completion
+        self:deselectAllObjects()
         self:updateButtonStates()
         return true
     end
@@ -181,6 +224,8 @@ function GameStateManager:cancelDrag()
     
     if self.draggingObject:cancelDragging() then
         self.draggingObject = nil
+        -- Ensure all objects are deselected after drag cancellation
+        self:deselectAllObjects()
         self:updateButtonStates()
         return true
     end
@@ -189,19 +234,14 @@ function GameStateManager:cancelDrag()
 end
 
 function GameStateManager:cancelSelection()
-    if self.selectedObject then
-        if self.selectedObject:cancelSelection() then
-            self.selectedObject = nil
-            self:updateButtonStates()
-            return true
-        end
-    end
-    
-    return false
+    -- Use the comprehensive deselect method to ensure all objects are deselected
+    self:deselectAllObjects()
+    self:updateButtonStates()
+    return true
 end
 
 function GameStateManager:handleObjectClick(tileX, tileY)
-    local object, objectId = self:getDraggableObjectAtPosition(tileX, tileY)
+    local object, objectId = self:getActionableObjectAtPosition(tileX, tileY)
     
     if object then
         -- If we're already dragging ANY object, don't allow selection of other objects
@@ -243,24 +283,29 @@ function GameStateManager:updateButtonStates(mapScale)
     local screenW, screenH = love.graphics.getWidth(), love.graphics.getHeight()
     
     if self.selectedObject then
-        -- Show selection buttons
-        self.buttonManager:createSelectionButtons(screenW, screenH, labelImages, icons, {
-            move = function() self:startDragging(self.selectedObject) end,
-            cancel = function() self:cancelSelection() end
-        }, scale)
+        -- Show action-specific buttons based on object type
+        local actions = {}
+        local availableActions = self.selectedObject:getAvailableActions()
+        
+        for _, action in ipairs(availableActions) do
+            actions[action] = function() self:performAction(self.selectedObject, action) end
+        end
+        actions.cancel = function() self:cancelSelection() end
+        
+        self.buttonManager:createActionButtons(screenW, screenH, labelImages, icons, actions, scale)
         
         -- Hide dragging buttons
-        self.buttonManager:clearButtonsByType(BUTTON_TYPE_DRAGGING)
+        self.buttonManager:clearButtonsByType(self.buttonManager.TYPE_DRAGGING)
         
     elseif self.draggingObject then
         -- Show dragging buttons
         self.buttonManager:createDraggingButtons(screenW, screenH, labelImages, icons, {
-            accept = function() self:acceptDrag() end,
-            cancel = function() self:cancelDrag() end
+            accept = function() return self:acceptDrag() end,
+            cancel = function() return self:cancelDrag() end
         }, scale)
         
-        -- Hide selection buttons
-        self.buttonManager:clearButtonsByType(BUTTON_TYPE_SELECTION)
+        -- Hide action buttons
+        self.buttonManager:clearButtonsByType(self.buttonManager.TYPE_ACTION)
         
     else
         -- No object selected or dragging, clear all buttons
@@ -300,11 +345,12 @@ end
 
 function GameStateManager:reset()
     -- Reset all objects
-    for _, object in pairs(self.draggableObjects) do
+    for _, object in pairs(self.actionableObjects) do
         object:reset()
     end
     
-    self.selectedObject = nil
+    -- Use comprehensive deselect to ensure clean state
+    self:deselectAllObjects()
     self.draggingObject = nil
     
     if self.buttonManager then

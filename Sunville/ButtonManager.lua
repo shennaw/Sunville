@@ -152,7 +152,7 @@ function ButtonManager:createDraggingButtons(screenW, screenH, labelImages, icon
         scale = scale
     })
     
-    -- Cancel button (right half)
+    -- Cancel button (right half) - always on the right
     self:addButton("drag_cancel", {
         type = ButtonManager.TYPE_DRAGGING,
         x = screenW - leftW - 8,
@@ -164,6 +164,73 @@ function ButtonManager:createDraggingButtons(screenW, screenH, labelImages, icon
         action = actions.cancel,
         scale = scale
     })
+end
+
+function ButtonManager:createActionButtons(screenW, screenH, labelImages, icons, actions, mapScale)
+    self:clearButtonsByType(ButtonManager.TYPE_ACTION)
+    
+    local scale = mapScale or self.defaultScale
+    local btnHeight = labelImages.left and (labelImages.left:getHeight() * scale) or 80
+    local btnY = screenH - btnHeight - 8
+    
+    -- Count the number of actions to determine button layout
+    local actionCount = 0
+    local actionList = {}
+    local cancelAction = nil
+    
+    -- Separate cancel action from others to ensure it's always on the right
+    for action, callback in pairs(actions) do
+        actionCount = actionCount + 1
+        if action == "cancel" then
+            cancelAction = {name = action, callback = callback}
+        else
+            table.insert(actionList, {name = action, callback = callback})
+        end
+    end
+    
+    -- Add cancel action at the end (rightmost position)
+    if cancelAction then
+        table.insert(actionList, cancelAction)
+    end
+    
+    if actionCount == 0 then return end
+    
+    -- Calculate button width based on number of actions
+    local totalWidth = screenW - 16 -- 8px margin on each side
+    local buttonGap = 8
+    local btnWidth = math.floor((totalWidth - (actionCount - 1) * buttonGap) / actionCount)
+    
+    for i, actionData in ipairs(actionList) do
+        local btnX = 8 + (i - 1) * (btnWidth + buttonGap)
+        local actionName = actionData.name
+        local icon = nil
+        local showHand = false
+        
+        -- Set icon and hand based on action type
+        if actionName == "move" then
+            showHand = true
+        elseif actionName == "axe" then
+            icon = icons.axe or icons.confirm -- fallback to confirm icon
+        elseif actionName == "water" then
+            icon = icons.water or icons.confirm
+        elseif actionName == "pickaxe" then
+            icon = icons.pickaxe or icons.confirm
+        elseif actionName == "cancel" then
+            icon = icons.cancel
+        end
+        
+        self:addButton("action_" .. actionName, {
+            type = ButtonManager.TYPE_ACTION,
+            x = btnX,
+            y = btnY,
+            width = btnWidth,
+            height = btnHeight,
+            icon = icon,
+            showHand = showHand,
+            action = actionData.callback,
+            scale = scale
+        })
+    end
 end
 
 function ButtonManager:drawButtons(labelImages, handImage)
