@@ -143,6 +143,11 @@ function GameStateManager:updateDrag(dt)
     if self.draggingObject then
         self.draggingObject:updateDrag(dt)
     end
+    
+    -- Update selection animations for all objects
+    for _, object in pairs(self.draggableObjects) do
+        object:updateSelection(dt)
+    end
 end
 
 function GameStateManager:updateDragPosition(tileX, tileY)

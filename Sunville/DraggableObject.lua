@@ -29,6 +29,11 @@ function DraggableObject.new(mapData, tileX, tileY, name)
         selectClickTileX = 0,
         selectClickTileY = 0,
         
+        -- Selection corner animation
+        selectionAnimTime = 0,
+        selectionAnimDuration = 1.5, -- Full cycle duration in seconds
+        selectionAnimOffset = 3, -- Maximum pixel offset for corners
+        
         -- Validation
         previewPlacementValid = true,
         invalidPlacementReason = nil,
@@ -104,6 +109,35 @@ function DraggableObject:updateDrag(dt)
     if self.dragDelayTimer > 0 then
         self.dragDelayTimer = self.dragDelayTimer - dt
     end
+end
+
+function DraggableObject:updateSelection(dt)
+    -- Update selection corner animation when selected
+    if self.isSelected then
+        self.selectionAnimTime = self.selectionAnimTime + dt
+        -- Keep animation time within bounds to prevent floating point precision issues
+        if self.selectionAnimTime > self.selectionAnimDuration then
+            self.selectionAnimTime = self.selectionAnimTime - self.selectionAnimDuration
+        end
+    else
+        self.selectionAnimTime = 0
+    end
+end
+
+function DraggableObject:getSelectionCornerOffset()
+    if not self.isSelected then
+        return 0
+    end
+    
+    -- Create a smooth breathing animation using sine wave
+    local progress = (self.selectionAnimTime / self.selectionAnimDuration) * 2 * math.pi
+    local sineValue = math.sin(progress)
+    
+    -- Map sine wave (-1 to 1) to offset (0 to selectionAnimOffset)
+    -- Use absolute value for outward-only movement, or keep as-is for in/out movement
+    local offset = (sineValue + 1) * 0.5 * self.selectionAnimOffset
+    
+    return math.floor(offset) -- Return integer offset to avoid sub-pixel positioning
 end
 
 function DraggableObject:updatePosition(tileX, tileY, sceneWidth, sceneHeight)

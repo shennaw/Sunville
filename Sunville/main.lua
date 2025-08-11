@@ -869,14 +869,20 @@ function love.drawDraggableObject(object, tilesetImage, tilesetQuads, tilesetFir
     local hh = object:getHeight()
     local px = mapDrawOffsetX + object.tileX * tileWidth
     local py = mapDrawOffsetY + object.tileY * tileHeight
+    
+    -- Get animated offset for breathing effect
+    local animOffset = object:getSelectionCornerOffset()
+    
     local function drawCorner(img, dx, dy)
       if img then love.graphics.draw(img, px + dx, py + dy) end
     end
     love.graphics.setColor(1, 1, 1, 1)
-    drawCorner(cornerTLImg, -2, -2)
-    if cornerTRImg then drawCorner(cornerTRImg, hw * tileWidth - cornerTRImg:getWidth() + 2, -2) end
-    if cornerBLImg then drawCorner(cornerBLImg, -2, hh * tileHeight - cornerBLImg:getHeight() + 2) end
-    if cornerBRImg then drawCorner(cornerBRImg, hw * tileWidth - cornerBRImg:getWidth() + 2, hh * tileHeight - cornerBRImg:getHeight() + 2) end
+    
+    -- Apply outward animation to each corner
+    drawCorner(cornerTLImg, -2 - animOffset, -2 - animOffset)
+    if cornerTRImg then drawCorner(cornerTRImg, hw * tileWidth - cornerTRImg:getWidth() + 2 + animOffset, -2 - animOffset) end
+    if cornerBLImg then drawCorner(cornerBLImg, -2 - animOffset, hh * tileHeight - cornerBLImg:getHeight() + 2 + animOffset) end
+    if cornerBRImg then drawCorner(cornerBRImg, hw * tileWidth - cornerBRImg:getWidth() + 2 + animOffset, hh * tileHeight - cornerBRImg:getHeight() + 2 + animOffset) end
   end
   
   -- Draw grid overlay and preview when dragging
