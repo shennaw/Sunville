@@ -17,7 +17,8 @@ function GameStateManager.new()
         waterMask = nil,
         treeMask = nil,
         sceneWidth = 0,
-        sceneHeight = 0
+        sceneHeight = 0,
+        mapScale = 1
     }
     
     setmetatable(manager, GameStateManager)
@@ -36,6 +37,10 @@ end
 function GameStateManager:setSceneDimensions(width, height)
     self.sceneWidth = width
     self.sceneHeight = height
+end
+
+function GameStateManager:setMapScale(mapScale)
+    self.mapScale = mapScale
 end
 
 function GameStateManager:addDraggableObject(id, object)
@@ -212,7 +217,10 @@ function GameStateManager:handleObjectClick(tileX, tileY)
     end
 end
 
-function GameStateManager:updateButtonStates()
+function GameStateManager:updateButtonStates(mapScale)
+    -- Use passed mapScale or fall back to stored mapScale
+    local scale = mapScale or self.mapScale
+    
     if not self.buttonManager then 
         print("Warning: updateButtonStates called before buttonManager was set")
         return 
@@ -234,7 +242,7 @@ function GameStateManager:updateButtonStates()
         self.buttonManager:createSelectionButtons(screenW, screenH, labelImages, icons, {
             move = function() self:startDragging(self.selectedObject) end,
             cancel = function() self:cancelSelection() end
-        })
+        }, scale)
         
         -- Hide dragging buttons
         self.buttonManager:clearButtonsByType(BUTTON_TYPE_DRAGGING)
@@ -244,7 +252,7 @@ function GameStateManager:updateButtonStates()
         self.buttonManager:createDraggingButtons(screenW, screenH, labelImages, icons, {
             accept = function() self:acceptDrag() end,
             cancel = function() self:cancelDrag() end
-        })
+        }, scale)
         
         -- Hide selection buttons
         self.buttonManager:clearButtonsByType(BUTTON_TYPE_SELECTION)

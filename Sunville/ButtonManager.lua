@@ -9,7 +9,7 @@ function ButtonManager.new()
         buttons = {},
         buttonTypes = {},
         buttonStates = {},
-        defaultScale = 2
+        defaultScale = 1 -- Will be updated dynamically
     }
     
     setmetatable(manager, ButtonManager)
@@ -96,10 +96,10 @@ function ButtonManager:clearButtonsByType(buttonType)
 end
 
 -- Factory methods for common button configurations
-function ButtonManager:createSelectionButtons(screenW, screenH, labelImages, icons, actions)
+function ButtonManager:createSelectionButtons(screenW, screenH, labelImages, icons, actions, mapScale)
     self:clearButtonsByType(ButtonManager.TYPE_SELECTION)
     
-    local scale = self.defaultScale
+    local scale = mapScale or self.defaultScale
     local btnHeight = labelImages.left and (labelImages.left:getHeight() * scale) or 80
     local btnY = screenH - btnHeight - 8
     local leftW = math.floor(screenW * 0.5) - 16 -- Reduced width to create gap
@@ -131,10 +131,10 @@ function ButtonManager:createSelectionButtons(screenW, screenH, labelImages, ico
     })
 end
 
-function ButtonManager:createDraggingButtons(screenW, screenH, labelImages, icons, actions)
+function ButtonManager:createDraggingButtons(screenW, screenH, labelImages, icons, actions, mapScale)
     self:clearButtonsByType(ButtonManager.TYPE_DRAGGING)
     
-    local scale = self.defaultScale
+    local scale = mapScale or self.defaultScale
     local btnHeight = labelImages.left and (labelImages.left:getHeight() * scale) or 80
     local btnY = screenH - btnHeight - 8
     local leftW = math.floor(screenW * 0.5) - 16 -- Reduced width to create gap
@@ -180,8 +180,8 @@ function ButtonManager:drawButton(button, labelImages, handImage)
     end
     
     local scale = button.scale
-    local leftW = labelImages.left:getWidth() * scale
-    local rightW = labelImages.right:getWidth() * scale
+    local leftW = math.floor(labelImages.left:getWidth() * scale)
+    local rightW = math.floor(labelImages.right:getWidth() * scale)
     local midW = math.max(0, button.width - leftW - rightW)
     
     -- Draw left cap
@@ -189,16 +189,27 @@ function ButtonManager:drawButton(button, labelImages, handImage)
     
     -- Draw middle section (tiled to fill the space)
     if midW > 0 then
-        local tileW = labelImages.middle:getWidth() * scale
-        local tiles = math.ceil(midW / tileW)
-        for i = 0, tiles - 1 do
-            local dx = button.x + leftW + i * tileW
-            love.graphics.draw(labelImages.middle, dx, button.y, 0, scale, scale)
+        local tileW = math.floor(labelImages.middle:getWidth() * scale)
+        if tileW > 0 then
+            local tiles = math.ceil(midW / tileW)
+            for i = 0, tiles - 1 do
+                local dx = button.x + leftW + i * tileW
+                -- Clip the middle tile if it extends beyond the button width
+                local clipW = math.min(tileW, midW - i * tileW)
+                if clipW > 0 then
+                    local quad = love.graphics.newQuad(0, 0, 
+                        math.min(labelImages.middle:getWidth(), clipW / scale), 
+                        labelImages.middle:getHeight(), 
+                        labelImages.middle:getWidth(), labelImages.middle:getHeight())
+                    love.graphics.draw(labelImages.middle, quad, dx, button.y, 0, scale, scale)
+                end
+            end
         end
     end
     
-    -- Draw right cap
-    love.graphics.draw(labelImages.right, button.x + leftW + midW, button.y, 0, scale, scale)
+    -- Draw right cap - ensure it's positioned exactly at the end
+    local rightX = button.x + button.width - rightW
+    love.graphics.draw(labelImages.right, rightX, button.y, 0, scale, scale)
     
     -- Draw icon
     if button.icon then

@@ -265,6 +265,7 @@ function love.resize(w, h)
   
   -- Update button states when window resizes (only if button manager is ready)
   if gameStateManager and gameStateManager.buttonManager then
+    gameStateManager:setMapScale(mapScale)
     gameStateManager:updateButtonStates()
   end
 end
@@ -629,6 +630,7 @@ function love.load()
   end
   
   -- Initial button state update
+  gameStateManager:setMapScale(mapScale)
   gameStateManager:updateButtonStates()
 end
 
