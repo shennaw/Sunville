@@ -1,11 +1,3 @@
--- main_refactored.lua
--- Refactored main game file using the new class-based architecture
-
--- Load the new classes
-local DraggableObject = require("DraggableObject")
-local ButtonManager = require("ButtonManager")
-local GameStateManager = require("GameStateManager")
-
 local loadSucceeded = false
 local sceneMap = nil
 local loadErrorMessage = nil
@@ -22,16 +14,36 @@ local mapDrawOffsetX, mapDrawOffsetY = 0, 0
 local verticalAnchor = "center" -- options: "top", "center", "bottom"
 local mapScale = 2 -- will be recalculated to fit screen while keeping integer scale
 
--- Game state management
-local gameStateManager = nil
-local buttonManager = nil
+-- Small house overlay
+local houseMap = nil
+local houseLoadError = nil
+-- Position to place the house on the base map (in tile coordinates of the base map)
+local houseTileX, houseTileY = 10, 6
+-- Drag & drop state for moving the house
+local isDraggingHouse = false
+local houseDragOffsetTilesX, houseDragOffsetTilesY = 0, 0
+local previewPlacementValid = true
+local invalidPlacementReason = nil
+local dragAnchorDeltaX, dragAnchorDeltaY = 0, 0
+-- Selection state (not dragging yet)
+local isHouseSelected = false
+local selectClickTileX, selectClickTileY = 0, 0
+-- Drag delay timer to prevent immediate movement
+local dragDelayTimer = 0
 
 -- UI sprites for selection
 local cornerTLImg, cornerTRImg, cornerBLImg, cornerBRImg = nil, nil, nil, nil
 local moveIconImg, cancelIconImg, confirmIconImg = nil, nil, nil
+-- Cached button rectangles in world pixels for click detection
+local lastMoveBtnRect, lastCancelBtnRect = nil, nil
+-- Bottom UI button rects (screen space)
+local selectMoveBtnRect, selectCancelBtnRect = nil, nil
+local dragAcceptBtnRect, dragCancelBtnRect = nil, nil
 
 -- Label images
 local labelLeftImg, labelMidImg, labelRightImg, handOpenImg = nil, nil, nil, nil
+-- Original position for canceling a drag
+local origHouseTileX, origHouseTileY = houseTileX, houseTileY
 
 -- Water detection
 local waterMask = nil -- 2D boolean array [y][x]
@@ -58,14 +70,9 @@ local function clamp(value, minValue, maxValue)
 end
 
 function love.update(dt)
-  -- Update game state
-  if gameStateManager then
-    gameStateManager:updateDrag(dt)
-  end
-  
-  -- Pause game logic when in grid mode (dragging mode)
-  if gameStateManager and gameStateManager:isAnyObjectDragging() then
-    return
+  -- Update drag delay timer
+  if dragDelayTimer > 0 then
+    dragDelayTimer = dragDelayTimer - dt
   end
   
   if npc and sceneMap then
@@ -214,51 +221,141 @@ local function recalcMapOffsets()
 end
 
 function love.mousepressed(x, y, button)
-  if button ~= 1 then return end
-  
-  -- First check if we clicked on a button
-  if gameStateManager then
-    local clickedButton = gameStateManager:handleButtonClick(x, y)
-    if clickedButton then
-      return -- Button handled the click
+  if button ~= 1 or not houseMap then return end
+  local tileX, tileY = screenToTile(x, y)
+  local houseWidth = houseMap.width or 0
+  local houseHeight = houseMap.height or 0
+
+  -- If a selection is open, check buttons first
+  if isHouseSelected then
+    local function pointInRect(px, py, rect)
+      return rect and px >= rect.x and px <= rect.x + rect.w and py >= rect.y and py <= rect.y + rect.h
+    end
+    -- Screen-space buttons
+    if pointInRect(x, y, selectMoveBtnRect) then
+      -- Enter dragging mode
+      isDraggingHouse = true
+      isHouseSelected = false
+      origHouseTileX, origHouseTileY = houseTileX, houseTileY
+      -- Set 100ms delay before house can be dragged
+      dragDelayTimer = 0.1
+      -- Keep the existing dragAnchorDeltaX/Y calculated when house was selected
+      -- This maintains the relative offset from where the user initially clicked on the house
+      return
+    elseif pointInRect(x, y, selectCancelBtnRect) then
+      isHouseSelected = false
+      dragDelayTimer = 0
+      return
     end
   end
-  
-  -- Convert to tile coordinates
-  local tileX, tileY = screenToTile(x, y)
-  
-  -- Handle object selection/dragging
-  if gameStateManager then
-    gameStateManager:handleObjectClick(tileX, tileY)
+
+  if isDraggingHouse then
+    local function pointInRect(px, py, rect)
+      return rect and px >= rect.x and px <= rect.x + rect.w and py >= rect.y and py <= rect.y + rect.h
+    end
+    if pointInRect(x, y, dragAcceptBtnRect) then
+      -- Accept placement if valid
+      if previewPlacementValid then
+        houseTileX = houseTileX + houseDragOffsetTilesX
+        houseTileY = houseTileY + houseDragOffsetTilesY
+      end
+      houseDragOffsetTilesX = 0
+      houseDragOffsetTilesY = 0
+      isDraggingHouse = false
+      dragDelayTimer = 0
+      return
+    elseif pointInRect(x, y, dragCancelBtnRect) then
+      -- Revert to original
+      houseTileX, houseTileY = origHouseTileX, origHouseTileY
+      houseDragOffsetTilesY = 0
+      houseDragOffsetTilesX = 0
+      isDraggingHouse = false
+      dragDelayTimer = 0
+      return
+    end
+  end
+
+
+
+  -- If clicking on house footprint: select it (do not start dragging yet)
+  -- But only if we're not already in dragging mode
+  if not isDraggingHouse and tileX >= houseTileX and tileX < houseTileX + houseWidth and tileY >= houseTileY and tileY < houseTileY + houseHeight then
+    -- Normal selection mode
+    isHouseSelected = true
+    selectClickTileX, selectClickTileY = tileX, tileY
+    isDraggingHouse = false
+    houseDragOffsetTilesY = 0
+    houseDragOffsetTilesX = 0
+    dragDelayTimer = 0
+    -- Calculate the offset from where we clicked on the house to its top-left corner
+    -- This will be used when dragging starts to maintain relative position
+    dragAnchorDeltaX = tileX - houseTileX
+    dragAnchorDeltaY = tileY - houseTileY
+    return
   end
 end
 
 function love.mousemoved(x, y, dx, dy)
-  if not gameStateManager or not gameStateManager:isAnyObjectDragging() then return end
+  if not isDraggingHouse then return end
   
-  -- Only move objects if the left mouse button is currently held down
+  -- Check if drag delay is still active
+  if dragDelayTimer > 0 then return end
+  
+  -- Only move the house if the left mouse button is currently held down
   if not love.mouse.isDown(1) then return end
   
   local tileX, tileY = screenToTile(x, y)
-  gameStateManager:updateDragPosition(tileX, tileY)
+  -- Use the drag anchor deltas to maintain relative position from initial click
+  local desiredTopLeftX = tileX - dragAnchorDeltaX
+  local desiredTopLeftY = tileY - dragAnchorDeltaY
+  -- Clamp desired top-left within map bounds
+  local maxX = (sceneMap.width - (houseMap.width or 0))
+  local maxY = (sceneMap.height - (houseMap.height or 0))
+  desiredTopLeftX = clamp(desiredTopLeftX, 0, maxX)
+  desiredTopLeftY = clamp(desiredTopLeftY, 0, maxY)
+  -- Convert to offsets from current committed top-left
+  houseDragOffsetTilesX = desiredTopLeftX - houseTileX
+  houseDragOffsetTilesY = desiredTopLeftY - houseTileY
+
+  -- Validate preview against water and trees mask
+  previewPlacementValid = true
+  invalidPlacementReason = nil
+  if waterMask then
+    local finalX = desiredTopLeftX
+    local finalY = desiredTopLeftY
+    local hW = houseMap.width or 0
+    local hH = houseMap.height or 0
+    for r = 0, hH - 1 do
+      for c = 0, hW - 1 do
+        local checkX = finalX + c
+        local checkY = finalY + r
+        local inBounds = checkX >= 0 and checkX < sceneMap.width and checkY >= 0 and checkY < sceneMap.height
+        local overlapsWater = inBounds and waterMask[checkY + 1] and waterMask[checkY + 1][checkX + 1]
+        local overlapsTree = inBounds and treeMask and treeMask[checkY + 1] and treeMask[checkY + 1][checkX + 1]
+        if overlapsWater or overlapsTree then
+          previewPlacementValid = false
+          invalidPlacementReason = overlapsWater and "Cannot place on water" or "Cannot place on trees"
+          break
+        end
+      end
+      if not previewPlacementValid then break end
+    end
+  end
 end
 
 function love.resize(w, h)
   -- Recalculate offsets when window changes
   recalcScale()
   recalcMapOffsets()
-  
-  -- Update button states when window resizes (only if button manager is ready)
-  if gameStateManager and gameStateManager.buttonManager then
-    gameStateManager:updateButtonStates()
-  end
 end
 
 function love.mousereleased(x, y, button)
   if button ~= 1 then return end
-  -- With the new button-based system, mouse release should NOT end dragging
-  -- Dragging only ends when Accept or Cancel buttons are clicked
-  -- Do nothing here - keep dragging state active
+  if isDraggingHouse then
+    -- With the new button-based system, mouse release should NOT end dragging
+    -- Dragging only ends when Accept or Cancel buttons are clicked
+    -- Do nothing here - keep dragging state active
+  end
 end
 
 local function tryLoadScene()
@@ -282,12 +379,6 @@ end
 function love.load()
   love.graphics.setDefaultFilter("nearest", "nearest", 1)
   if love.math and love.math.setRandomSeed then love.math.setRandomSeed(os.time()) end
-  
-  -- Initialize game state management
-  gameStateManager = GameStateManager.new()
-  buttonManager = ButtonManager.new()
-  gameStateManager:setButtonManager(buttonManager)
-  
   tryLoadScene()
 
   -- Build tileset for rendering if the map loaded
@@ -331,7 +422,6 @@ function love.load()
   end
 
   -- Load the small house map (same tileset/gids)
-  local houseMap = nil
   do
     local ok, resultOrError = pcall(function()
       return dofile("Lua Tileset/small-house.lua")
@@ -339,7 +429,9 @@ function love.load()
     if ok and type(resultOrError) == "table" then
       houseMap = resultOrError
     else
-      print("Failed to load small house:", tostring(resultOrError))
+      houseMap = nil
+      houseLoadError = tostring(resultOrError)
+      print("Failed to load small house:", houseLoadError)
     end
   end
 
@@ -421,11 +513,6 @@ function love.load()
   if loadSucceeded then
     recalcScale()
     recalcMapOffsets()
-    
-    -- Set scene dimensions for the game state manager
-    gameStateManager:setSceneDimensions(sceneMap.width, sceneMap.height)
-    gameStateManager:setCollisionMasks(waterMask, treeMask)
-    
     print(string.format(
       "Loaded scene: %dx%d tiles, tile size %dx%d, layers=%d",
       sceneMap.width or -1,
@@ -532,40 +619,13 @@ function love.load()
   print("  labelMidImg:", labelMidImg and "OK" or "FAILED")
   print("  labelRightImg:", labelRightImg and "OK" or "FAILED")
   print("  handOpenImg:", handOpenImg and "OK" or "FAILED")
-  
-  -- Create draggable objects
-  if houseMap then
-    local house1 = DraggableObject.new(houseMap, 10, 6, "House 1")
-    local house2 = DraggableObject.new(houseMap, 15, 8, "House 2")
-    gameStateManager:addDraggableObject("house1", house1)
-    gameStateManager:addDraggableObject("house2", house2)
-  end
-  
-  -- Override the getLabelImages and getIcons methods in GameStateManager
-  function gameStateManager:getLabelImages()
-    return {
-      left = labelLeftImg,
-      middle = labelMidImg,
-      right = labelRightImg
-    }
-  end
-  
-  function gameStateManager:getIcons()
-    return {
-      confirm = confirmIconImg,
-      cancel = cancelIconImg
-    }
-  end
-  
-  -- Initial button state update
-  gameStateManager:updateButtonStates()
 end
 
 function love.draw()
   love.graphics.clear(0.08, 0.1, 0.12)
   local y = 32
   love.graphics.setColor(1, 1, 1)
-  love.graphics.print("Sunville - Refactored Scene Load Test", 24, y)
+  love.graphics.print("Sunville - Scene Load Test", 24, y)
   y = y + 24
 
   if loadSucceeded then
@@ -628,6 +688,56 @@ function love.draw()
         end
       end
 
+      -- Trees disabled for now
+      if false and treeMap and #trees > 0 and forestImage and #forestQuads > 0 then
+        local tw = sceneMap.tilewidth
+        local th = sceneMap.tileheight
+        local layer = treeMap.layers and treeMap.layers[1]
+        if layer and layer.data then
+          for _, t in ipairs(trees) do
+            for row = 0, (treeMap.height or 2) - 1 do
+              for col = 0, (treeMap.width or 2) - 1 do
+                local idx = row * (treeMap.width or 2) + col + 1
+                local gid = layer.data[idx] or 0
+                if gid ~= 0 then
+                  local localId = gid - treeTilesetFirstGid
+                  local quad = forestQuads[localId + 1]
+                  if forestImage and (quad or true) then
+                    -- If prebuilt quad missing, compute on the fly
+                    if not quad then
+                      local imgW, imgH = forestImage:getDimensions()
+                      local cols = math.floor(imgW / forestTileW)
+                      if cols > 0 and localId >= 0 then
+                        local qx = (localId % cols) * forestTileW
+                        local qy = math.floor(localId / cols) * forestTileH
+                        quad = love.graphics.newQuad(qx, qy, forestTileW, forestTileH, imgW, imgH)
+                      end
+                    end
+                    if quad then
+                      local scaleX = tw / forestTileW
+                      local scaleY = th / forestTileH
+                      love.graphics.draw(forestImage, quad,
+                        mapDrawOffsetX + (t.x + col) * tw,
+                        mapDrawOffsetY + (t.y + row) * th,
+                        0, scaleX, scaleY)
+                    end
+                  end
+                  if not quad then
+                    -- Fallback to base tileset if forest lookup fails
+                    local baseQuad = tilesetQuads[(gid - tilesetFirstGid) + 1]
+                    if baseQuad and tilesetImage then
+                      love.graphics.draw(tilesetImage, baseQuad,
+                        mapDrawOffsetX + (t.x + col) * tw,
+                        mapDrawOffsetY + (t.y + row) * th)
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+
       -- Draw NPC after the map
       if npc then
         local sx = npc.facing
@@ -653,51 +763,246 @@ function love.draw()
         end
       end
 
-                              -- Draw non-selected draggable objects first (under the overlay)
-                        if gameStateManager then
-                          for id, object in pairs(gameStateManager.draggableObjects) do
-                            -- Only draw objects that are NOT currently being dragged
-                            if not object.isDragging then
-                              love.drawDraggableObject(object, tilesetImage, tilesetQuads, tilesetFirstGid, tileWidth, tileHeight, sceneMap, mapDrawOffsetX, mapDrawOffsetY, cornerTLImg, cornerTRImg, cornerBLImg, cornerBRImg)
-                            end
-                          end
-                        end
+      -- While dragging: darken the map and draw a grid overlay above it
+      if isDraggingHouse then
+        local mapPixelW = sceneMap.width * tileWidth
+        local mapPixelH = sceneMap.height * tileHeight
+        -- Darken map underlay
+        love.graphics.setColor(0, 0, 0, 0.25)
+        love.graphics.rectangle("fill", mapDrawOffsetX, mapDrawOffsetY, mapPixelW, mapPixelH)
+        -- Grid overlay: blue if valid, red if invalid
+        if previewPlacementValid then
+          love.graphics.setColor(0.35, 0.65, 1.0, 0.28)
+        else
+          love.graphics.setColor(1.0, 0.35, 0.35, 0.32)
+        end
+        for gx = 0, mapPixelW - 1, tileWidth do
+          love.graphics.line(mapDrawOffsetX + gx + 0.5, mapDrawOffsetY, mapDrawOffsetX + gx + 0.5, mapDrawOffsetY + mapPixelH)
+        end
+        for gy = 0, mapPixelH - 1, tileHeight do
+          love.graphics.line(mapDrawOffsetX, mapDrawOffsetY + gy + 0.5, mapDrawOffsetX + mapPixelW, mapDrawOffsetY + gy + 0.5)
+        end
 
-                        -- While dragging: darken the map and draw a grid overlay above it
-                        if gameStateManager and gameStateManager:isAnyObjectDragging() then
-                          local mapPixelW = sceneMap.width * tileWidth
-                          local mapPixelH = sceneMap.height * tileHeight
-                          -- Darken map underlay
-                          love.graphics.setColor(0, 0, 0, 0.25)
-                          love.graphics.rectangle("fill", mapDrawOffsetX, mapDrawOffsetY, mapPixelW, mapPixelH)
-                          love.graphics.setColor(1, 1, 1, 1)
-                        end
+        -- Highlight the house footprint where it will be placed
+        if houseMap then
+          local previewTopLeftX = houseTileX + houseDragOffsetTilesX
+          local previewTopLeftY = houseTileY + houseDragOffsetTilesY
+          local hW = houseMap.width or 0
+          local hH = houseMap.height or 0
+          -- Footprint fill: blue if valid, red if invalid
+          if previewPlacementValid then
+            love.graphics.setColor(0.25, 0.55, 1.0, 0.18)
+          else
+            love.graphics.setColor(1.0, 0.4, 0.4, 0.18)
+          end
+          love.graphics.rectangle(
+            "fill",
+            mapDrawOffsetX + previewTopLeftX * tileWidth,
+            mapDrawOffsetY + previewTopLeftY * tileHeight,
+            hW * tileWidth,
+            hH * tileHeight
+          )
+          -- Footprint outline: blue if valid, red if invalid
+          if previewPlacementValid then
+            love.graphics.setColor(0.25, 0.6, 1.0, 0.7)
+          else
+            love.graphics.setColor(1.0, 0.45, 0.45, 0.8)
+          end
+          for r = 0, hH - 1 do
+            for c = 0, hW - 1 do
+              love.graphics.rectangle(
+                "line",
+                mapDrawOffsetX + (previewTopLeftX + c) * tileWidth + 0.5,
+                mapDrawOffsetY + (previewTopLeftY + r) * tileHeight + 0.5,
+                tileWidth,
+                tileHeight
+              )
+            end
+          end
+        end
+        love.graphics.setColor(1, 1, 1, 1)
+      end
 
-                        -- Draw only the selected/dragging object above the dark overlay
-                        if gameStateManager then
-                          for id, object in pairs(gameStateManager.draggableObjects) do
-                            -- Only draw objects that ARE currently being dragged
-                            if object.isDragging then
-                              love.drawDraggableObject(object, tilesetImage, tilesetQuads, tilesetFirstGid, tileWidth, tileHeight, sceneMap, mapDrawOffsetX, mapDrawOffsetY, cornerTLImg, cornerTRImg, cornerBLImg, cornerBRImg)
-                            end
-                          end
-                        end
+      -- Full map grid overlay when dragging (to show grid mode is active)
+      if isDraggingHouse then
+        local mapPixelW = sceneMap.width * tileWidth
+        local mapPixelH = sceneMap.height * tileHeight
+        -- Light grid overlay to show grid mode is active
+        love.graphics.setColor(0.5, 0.8, 1.0, 0.15)
+        for gx = 0, mapPixelW - 1, tileWidth do
+          love.graphics.line(mapDrawOffsetX + gx + 0.5, mapDrawOffsetY, mapDrawOffsetX + gx + 0.5, mapDrawOffsetY + mapPixelH)
+        end
+        for gy = 0, mapPixelH - 1, tileHeight do
+          love.graphics.line(mapDrawOffsetX, mapDrawOffsetY + gy + 0.5, mapDrawOffsetX + mapPixelW, mapDrawOffsetY + gy + 0.5)
+        end
+        love.graphics.setColor(1, 1, 1, 1)
+      end
+
+      -- Draw the small house overlay after base layers and grid
+      if houseMap and houseMap.layers and #houseMap.layers > 0 then
+        for _, layer in ipairs(houseMap.layers) do
+          if layer.type == "tilelayer" and layer.visible ~= false and layer.data then
+            local mapWidth = layer.width or houseMap.width
+            local mapHeight = layer.height or houseMap.height
+            for row = 0, mapHeight - 1 do
+              for col = 0, mapWidth - 1 do
+                local idx = row * mapWidth + col + 1
+                local gid = layer.data[idx] or 0
+                if gid ~= 0 then
+                  local localId = gid - tilesetFirstGid
+                  local quad = tilesetQuads[localId + 1]
+                  if quad then
+                    local placeTileX = houseTileX + col
+                    local placeTileY = houseTileY + row
+                    if isDraggingHouse then
+                      placeTileX = placeTileX + houseDragOffsetTilesX
+                      placeTileY = placeTileY + houseDragOffsetTilesY
+                    end
+                    -- While dragging, draw semi-transparent; tint red if invalid
+                    if isDraggingHouse then
+                      if not previewPlacementValid then
+                        love.graphics.setColor(1, 0.6, 0.6, 0.8)
+                      else
+                        love.graphics.setColor(1, 1, 1, 0.8)
+                      end
+                    else
+                      love.graphics.setColor(1, 1, 1, 1)
+                    end
+                    love.graphics.draw(
+                      tilesetImage,
+                      quad,
+                      mapDrawOffsetX + placeTileX * tileWidth + (layer.offsetx or 0),
+                      mapDrawOffsetY + placeTileY * tileHeight + (layer.offsety or 0)
+                    )
+                    love.graphics.setColor(1, 1, 1, 1)
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+      -- If selected and not dragging: draw selection corners
+      if isHouseSelected and houseMap then
+        local hw = houseMap.width or 0
+        local hh = houseMap.height or 0
+        local px = mapDrawOffsetX + houseTileX * tileWidth
+        local py = mapDrawOffsetY + houseTileY * tileHeight
+        local function drawCorner(img, dx, dy)
+          if img then love.graphics.draw(img, px + dx, py + dy) end
+        end
+        love.graphics.setColor(1, 1, 1, 1)
+        drawCorner(cornerTLImg, -2, -2)
+        if cornerTRImg then drawCorner(cornerTRImg, hw * tileWidth - cornerTRImg:getWidth() + 2, -2) end
+        if cornerBLImg then drawCorner(cornerBLImg, -2, hh * tileHeight - cornerBLImg:getHeight() + 2) end
+        if cornerBRImg then drawCorner(cornerBRImg, hw * tileWidth - cornerBRImg:getWidth() + 2, hh * tileHeight - cornerBRImg:getHeight() + 2) end
+      end
 
       love.graphics.pop()
     end
 
     -- Draw bottom buttons in screen space (outside of transformed context)
-    if gameStateManager then
-      gameStateManager:drawButtons({
-        left = labelLeftImg,
-        middle = labelMidImg,
-        right = labelRightImg
-      }, handOpenImg)
+    if isHouseSelected and not isDraggingHouse then
+      -- Selection mode buttons: Move (left half) and Cancel (right half)
+      local screenW, screenH = love.graphics.getWidth(), love.graphics.getHeight()
+      local scale = 2 -- Scale factor for 2x scaling
+      local btnHeight = labelLeftImg and (labelLeftImg:getHeight() * scale) or 80 -- Dynamic height based on scaled label
+      local btnY = screenH - btnHeight - 8
+      
+      local function drawLabelButton(x, width, icon, showHand)
+        if not (labelLeftImg and labelMidImg and labelRightImg) then 
+          return 
+        end
+        local leftW = labelLeftImg:getWidth() * scale
+        local rightW = labelRightImg:getWidth() * scale
+        local midW = math.max(0, width - leftW - rightW)
+        
+        -- Draw left cap
+        love.graphics.draw(labelLeftImg, x, btnY, 0, scale, scale)
+        
+        -- Draw middle section (tiled to fill the space)
+        if midW > 0 then
+          local tileW = labelMidImg:getWidth() * scale
+          local tiles = math.ceil(midW / tileW)
+          for i = 0, tiles - 1 do
+            local dx = x + leftW + i * tileW
+            love.graphics.draw(labelMidImg, dx, btnY, 0, scale, scale)
+          end
+        end
+        
+        -- Draw right cap
+        love.graphics.draw(labelRightImg, x + leftW + midW, btnY, 0, scale, scale)
+        
+        if icon then
+          local iconX = x + width * 0.5 - (icon:getWidth() * scale) * 0.5
+          local iconY = btnY + (btnHeight - icon:getHeight() * scale) * 0.5
+          love.graphics.draw(icon, iconX, iconY, 0, scale, scale)
+        end
+        if showHand and handOpenImg then
+          local handX = x + width * 0.5 - handOpenImg:getWidth() * scale * 0.5
+          local handY = btnY + (btnHeight - handOpenImg:getHeight() * scale) * 0.5
+          love.graphics.draw(handOpenImg, handX, handY, 0, scale, scale)
+        end
+      end
+      local leftX = 8
+      local leftW = math.floor(screenW * 0.5) - 16 -- Reduced width to create gap
+      drawLabelButton(leftX, leftW, nil, true) -- Left button: no icon, show hand
+      selectMoveBtnRect = {x = leftX, y = btnY, w = leftW, h = btnHeight}
+      local rightX = screenW - leftW - 8
+      drawLabelButton(rightX, leftW, cancelIconImg, false) -- Right button: cancel icon, no hand
+      selectCancelBtnRect = {x = rightX, y = btnY, w = leftW, h = btnHeight}
+    else
+      selectMoveBtnRect, selectCancelBtnRect = nil, nil
+    end
+
+    -- Dragging mode bottom buttons (Accept / Cancel)
+    if isDraggingHouse then
+      local screenW, screenH = love.graphics.getWidth(), love.graphics.getHeight()
+      local scale = 2 -- Scale factor for 2x scaling
+      local btnHeight = labelLeftImg and (labelLeftImg:getHeight() * scale) or 80 -- Dynamic height based on scaled label
+      local btnY = screenH - btnHeight - 8
+      local function drawLabelButton(x, width, icon)
+        if not (labelLeftImg and labelMidImg and labelRightImg) then return end
+        local leftW = labelLeftImg:getWidth() * scale
+        local rightW = labelRightImg:getWidth() * scale
+        local midW = math.max(0, width - leftW - rightW)
+        
+        -- Draw left cap
+        love.graphics.draw(labelLeftImg, x, btnY, 0, scale, scale)
+        
+        -- Draw middle section (tiled to fill the space)
+        if midW > 0 then
+          local tileW = labelMidImg:getWidth() * scale
+          local tiles = math.ceil(midW / tileW)
+          for i = 0, tiles - 1 do
+            local dx = x + leftW + i * tileW
+            love.graphics.draw(labelMidImg, dx, btnY, 0, scale, scale)
+          end
+        end
+        
+        -- Draw right cap
+        love.graphics.draw(labelRightImg, x + leftW + midW, btnY, 0, scale, scale)
+        
+        if icon then
+          local iconX = x + width * 0.5 - (icon:getWidth() * scale) * 0.5
+          local iconY = btnY + (btnHeight - icon:getHeight() * scale) * 0.5
+          love.graphics.draw(icon, iconX, iconY, 0, scale, scale)
+        end
+      end
+      local leftX = 8
+      local leftW = math.floor(screenW * 0.5) - 16 -- Reduced width to create gap
+      drawLabelButton(leftX, leftW, confirmIconImg) -- Accept (confirm icon)
+      dragAcceptBtnRect = {x = leftX, y = btnY, w = leftW, h = btnHeight}
+      local rightX = screenW - leftW - 8
+      drawLabelButton(rightX, leftW, cancelIconImg) -- Cancel
+      dragCancelBtnRect = {x = rightX, y = btnY, w = leftW, h = btnHeight}
+    else
+      dragAcceptBtnRect, dragCancelBtnRect = nil, nil
     end
 
     -- HUD text
     love.graphics.setColor(0.8, 1, 0.8)
-    love.graphics.print("Status: OK (refactored)", 24, y)
+    love.graphics.print("Status: OK (rendering)", 24, y)
     y = y + 24
     love.graphics.setColor(1, 1, 1)
     love.graphics.print(string.format("Map: %dx%d tiles", sceneMap.width or 0, sceneMap.height or 0), 24, y)
@@ -707,25 +1012,16 @@ function love.draw()
     local layerCount = (sceneMap.layers and #sceneMap.layers) or 0
     love.graphics.print(string.format("Layers: %d", layerCount), 24, y)
     y = y + 20
-    
-    -- Show object states
-    if gameStateManager then
-      local selectedObj = gameStateManager:getSelectedObject()
-      local draggingObj = gameStateManager:getDraggingObject()
-      
-      if selectedObj then
-        love.graphics.print(string.format("Selected: %s @ (%d,%d)", selectedObj.name, selectedObj.tileX, selectedObj.tileY), 24, y)
+    if houseMap then
+      love.graphics.print(string.format("House: %dx%d tiles @ (%d,%d)", houseMap.width or 0, houseMap.height or 0, houseTileX, houseTileY), 24, y)
+      if isDraggingHouse and not previewPlacementValid then
         y = y + 20
-      elseif draggingObj then
-        love.graphics.print(string.format("Dragging: %s @ (%d,%d)", draggingObj.name, draggingObj:getCurrentTileX(), draggingObj:getCurrentTileY()), 24, y)
-        y = y + 20
-        if not draggingObj.previewPlacementValid then
-          love.graphics.setColor(1, 0.8, 0.6)
-          love.graphics.print(draggingObj.invalidPlacementReason or "Invalid placement", 24, y)
-          love.graphics.setColor(1, 1, 1)
-          y = y + 20
-        end
+        love.graphics.setColor(1, 0.8, 0.6)
+        love.graphics.print(invalidPlacementReason or "Invalid placement", 24, y)
       end
+    elseif houseLoadError then
+      love.graphics.setColor(1, 0.8, 0.6)
+      love.graphics.print("House failed to load", 24, y)
     end
   else
     love.graphics.setColor(1, 0.7, 0.7)
@@ -738,137 +1034,4 @@ function love.draw()
   end
 end
 
--- Helper function to draw a draggable object
-function love.drawDraggableObject(object, tilesetImage, tilesetQuads, tilesetFirstGid, tileWidth, tileHeight, sceneMap, mapDrawOffsetX, mapDrawOffsetY, cornerTLImg, cornerTRImg, cornerBLImg, cornerBRImg)
-  if not object.mapData or not object.mapData.layers then return end
-  
-  for _, layer in ipairs(object.mapData.layers) do
-    if layer.type == "tilelayer" and layer.visible ~= false and layer.data then
-      local mapWidth = layer.width or object.mapData.width
-      local mapHeight = layer.height or object.mapData.height
-      for row = 0, mapHeight - 1 do
-        for col = 0, mapWidth - 1 do
-          local idx = row * mapWidth + col + 1
-          local gid = layer.data[idx] or 0
-          if gid ~= 0 then
-            local localId = gid - tilesetFirstGid
-            local quad = tilesetQuads[localId + 1]
-            if quad then
-              local placeTileX = object.tileX + col
-              local placeTileY = object.tileY + row
-              if object.isDragging then
-                placeTileX = placeTileX + object.dragOffsetX
-                placeTileY = placeTileY + object.dragOffsetY
-              end
-              -- While dragging, draw semi-transparent; tint red if invalid
-              if object.isDragging then
-                if not object.previewPlacementValid then
-                  love.graphics.setColor(1, 0.6, 0.6, 0.8)
-                else
-                  love.graphics.setColor(1, 1, 1, 0.8)
-                end
-              else
-                love.graphics.setColor(1, 1, 1, 1)
-              end
-              love.graphics.draw(
-                tilesetImage,
-                quad,
-                mapDrawOffsetX + placeTileX * tileWidth + (layer.offsetx or 0),
-                mapDrawOffsetY + placeTileY * tileHeight + (layer.offsety or 0)
-              )
-              love.graphics.setColor(1, 1, 1, 1)
-            end
-          end
-        end
-      end
-    end
-  end
-  
-  -- Draw selection corners if selected
-  if object.isSelected then
-    local hw = object:getWidth()
-    local hh = object:getHeight()
-    local px = mapDrawOffsetX + object.tileX * tileWidth
-    local py = mapDrawOffsetY + object.tileY * tileHeight
-    local function drawCorner(img, dx, dy)
-      if img then love.graphics.draw(img, px + dx, py + dy) end
-    end
-    love.graphics.setColor(1, 1, 1, 1)
-    drawCorner(cornerTLImg, -2, -2)
-    if cornerTRImg then drawCorner(cornerTRImg, hw * tileWidth - cornerTRImg:getWidth() + 2, -2) end
-    if cornerBLImg then drawCorner(cornerBLImg, -2, hh * tileHeight - cornerBLImg:getHeight() + 2) end
-    if cornerBRImg then drawCorner(cornerBRImg, hw * tileWidth - cornerBRImg:getWidth() + 2, hh * tileHeight - cornerBRImg:getHeight() + 2) end
-  end
-  
-  -- Draw grid overlay and preview when dragging
-  if object.isDragging then
-    -- Grid overlay
-    local mapPixelW = sceneMap.width * tileWidth
-    local mapPixelH = sceneMap.height * tileHeight
-    love.graphics.setColor(0.5, 0.8, 1.0, 0.15)
-    for gx = 0, mapPixelW - 1, tileWidth do
-      love.graphics.line(mapDrawOffsetX + gx + 0.5, mapDrawOffsetY, mapDrawOffsetX + gx + 0.5, mapDrawOffsetY + mapPixelH)
-    end
-    for gy = 0, mapPixelH - 1, tileHeight do
-      love.graphics.line(mapDrawOffsetX, mapDrawOffsetY + gy + 0.5, mapDrawOffsetX + mapPixelW, mapDrawOffsetY + gy + 0.5)
-    end
-    love.graphics.setColor(1, 1, 1, 1)
-    
-    -- Preview footprint
-    local previewTopLeftX = object:getCurrentTileX()
-    local previewTopLeftY = object:getCurrentTileY()
-    local hW = object:getWidth()
-    local hH = object:getHeight()
-    
-    -- Footprint fill: blue if valid, red if invalid
-    if object.previewPlacementValid then
-      love.graphics.setColor(0.25, 0.55, 1.0, 0.18)
-    else
-      love.graphics.setColor(1.0, 0.4, 0.4, 0.18)
-    end
-    love.graphics.rectangle(
-      "fill",
-      mapDrawOffsetX + previewTopLeftX * tileWidth,
-      mapDrawOffsetY + previewTopLeftY * tileHeight,
-      hW * tileWidth,
-      hH * tileHeight
-    )
-    
-    -- Footprint outline: blue if valid, red if invalid
-    if object.previewPlacementValid then
-      love.graphics.setColor(0.25, 0.6, 1.0, 0.7)
-    else
-      love.graphics.setColor(1.0, 0.45, 0.45, 0.8)
-    end
-    for r = 0, hH - 1 do
-      for c = 0, hW - 1 do
-        love.graphics.rectangle(
-          "line",
-          mapDrawOffsetX + (previewTopLeftX + c) * tileWidth + 0.5,
-          mapDrawOffsetY + (previewTopLeftY + r) * tileHeight + 0.5,
-          tileWidth,
-          tileHeight
-        )
-      end
-    end
-    love.graphics.setColor(1, 1, 1, 1)
-    
-    -- Show invalid placement reason as text
-    if not object.previewPlacementValid and object.invalidPlacementReason then
-      love.graphics.setColor(1, 0.3, 0.3, 1)
-      local text = object.invalidPlacementReason
-      local font = love.graphics.getFont()
-      local textW = font:getWidth(text)
-      local textH = font:getHeight()
-      local textX = mapDrawOffsetX + previewTopLeftX * tileWidth + (hW * tileWidth - textW) / 2
-      local textY = mapDrawOffsetY + previewTopLeftY * tileHeight - textH - 5
-      
-      -- Draw text background
-      love.graphics.setColor(0, 0, 0, 0.7)
-      love.graphics.rectangle("fill", textX - 2, textY - 2, textW + 4, textH + 4)
-      love.graphics.setColor(1, 0.3, 0.3, 1)
-      love.graphics.print(text, textX, textY)
-      love.graphics.setColor(1, 1, 1, 1)
-    end
-  end
-end
+
