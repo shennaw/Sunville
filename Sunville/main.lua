@@ -57,6 +57,10 @@ local function clamp(value, minValue, maxValue)
   return value
 end
 
+local function round(x)
+  return math.floor(x + 0.5)
+end
+
 function love.update(dt)
   -- Update game state
   if gameStateManager then
@@ -178,39 +182,50 @@ local function recalcScale()
   local screenW, screenH = love.graphics.getWidth(), love.graphics.getHeight()
   if worldW == 0 or worldH == 0 then return end
 
-  -- Fit map within screen using integer pixel scale to avoid blurring
+  -- Fullscreen scaling system - fill entire screen
   local scaleW = screenW / worldW
   local scaleH = screenH / worldH
-  local fitScale = math.floor(math.min(scaleW, scaleH))
-  if fitScale < 1 then fitScale = 1 end
-  mapScale = fitScale
+  
+  -- Use the larger scale to fill the screen completely (may crop some content)
+  -- This eliminates blank spaces and makes the game truly fullscreen
+  local baseScale = math.max(scaleW, scaleH)
+  
+  -- For crisp pixel art, prefer integer scaling when close enough
+  local integerScale = round(baseScale)
+  local scaleDifference = math.abs(baseScale - integerScale)
+  
+  if scaleDifference < 0.1 and integerScale >= 1 then
+    -- Use integer scale if it's close to the calculated scale
+    mapScale = integerScale
+  else
+    -- Use exact scale for perfect fullscreen fit
+    mapScale = baseScale
+  end
+  
+  -- Ensure minimum scale for usability
+  mapScale = math.max(mapScale, 0.1)
 end
 
 local function recalcMapOffsets()
   if not sceneMap then return end
   local tileWidth = sceneMap.tilewidth or 16
   local tileHeight = sceneMap.tileheight or 16
+  local mapPixelW = (sceneMap.width or 0) * tileWidth
   local mapPixelH = (sceneMap.height or 0) * tileHeight
 
   local screenW, screenH = love.graphics.getWidth(), love.graphics.getHeight()
-  local viewH = screenH / mapScale
+  local scaledMapW = mapPixelW * mapScale
+  local scaledMapH = mapPixelH * mapScale
 
-  local desiredY = 0
-  if viewH > mapPixelH then
-    if verticalAnchor == "bottom" then
-      desiredY = viewH - mapPixelH
-    elseif verticalAnchor == "center" then
-      desiredY = (viewH - mapPixelH) * 0.5
-    else -- top
-      desiredY = 0
-    end
-  else
-    -- Map taller than view: anchor to top to avoid hiding top content
-    desiredY = 0
-  end
+  -- Center the scaled map content on screen
+  -- This handles cases where the map might be larger than screen due to fullscreen scaling
+  local desiredX = (screenW - scaledMapW) * 0.5 / mapScale
+  local desiredY = (screenH - scaledMapH) * 0.5 / mapScale
 
-  -- Round to nearest pixel in world space to avoid seams after scaling
-  mapDrawOffsetY = math.floor(desiredY + 0.5)
+  -- For fullscreen scaling, we want to center the content perfectly
+  -- No need for complex anchor logic since we're filling the entire screen
+  mapDrawOffsetX = desiredX
+  mapDrawOffsetY = desiredY
 end
 
 function love.mousepressed(x, y, button)
@@ -261,6 +276,24 @@ function love.mousereleased(x, y, button)
   -- Do nothing here - keep dragging state active
 end
 
+-- Mobile touch support
+function love.touchpressed(id, x, y, dx, dy, pressure)
+  -- Treat touch as left mouse button press
+  love.mousepressed(x, y, 1)
+end
+
+function love.touchmoved(id, x, y, dx, dy, pressure)
+  -- Treat touch move as mouse move
+  love.mousemoved(x, y, dx, dy)
+end
+
+function love.touchreleased(id, x, y, dx, dy, pressure)
+  -- Treat touch release as left mouse button release
+  love.mousereleased(x, y, 1)
+end
+
+-- Handle device orientation changes (duplicate function removed)
+
 local function tryLoadScene()
   local ok, resultOrError = pcall(function()
     -- Load the Tiled-exported Lua map (vertical/portrait layout)
@@ -282,6 +315,44 @@ end
 function love.load()
   love.graphics.setDefaultFilter("nearest", "nearest", 1)
   if love.math and love.math.setRandomSeed then love.math.setRandomSeed(os.time()) end
+  
+  -- Mobile-friendly window sizing (now that Love2D is fully initialized)
+  local function adjustWindowForMobile()
+    local baseWidth, baseHeight = 640, 960
+    local aspectRatio = baseWidth / baseHeight
+    local screenWidth, screenHeight = love.window.getDesktopDimensions()
+    
+    -- Calculate optimal window size maintaining aspect ratio
+    local windowWidth, windowHeight
+    if screenWidth / screenHeight > aspectRatio then
+      -- Screen is wider than our aspect ratio - fit to height
+      windowHeight = math.min(screenHeight * 0.9, 960) -- Max 90% of screen height
+      windowWidth = math.floor(windowHeight * aspectRatio)
+    else
+      -- Screen is taller than our aspect ratio - fit to width
+      windowWidth = math.min(screenWidth * 0.9, 640) -- Max 90% of screen width
+      windowHeight = math.floor(windowWidth / aspectRatio)
+    end
+    
+    -- Ensure minimum viable size
+    windowWidth = math.max(windowWidth, 480)
+    windowHeight = math.max(windowHeight, 720)
+    
+    -- Only resize if significantly different from current size
+    local currentWidth, currentHeight = love.graphics.getWidth(), love.graphics.getHeight()
+    if math.abs(currentWidth - windowWidth) > 50 or math.abs(currentHeight - windowHeight) > 50 then
+      love.window.setMode(windowWidth, windowHeight, {
+        resizable = true,
+        minwidth = 480,
+        minheight = 720,
+        highdpi = true,
+        usedpiscale = false
+      })
+    end
+  end
+  
+  -- Apply mobile-friendly window sizing
+  adjustWindowForMobile()
   
   -- Initialize game state management
   gameStateManager = GameStateManager.new()
@@ -579,7 +650,7 @@ function love.draw()
       -- Grid will be drawn above the base map while dragging; see below
       love.graphics.setColor(1, 1, 1)
 
-      -- Draw a solid background of grass to cover any empty cells and any screen area
+      -- Draw a solid background of grass to cover the entire screen area
       do
         local tileWidth = sceneMap.tilewidth
         local tileHeight = sceneMap.tileheight
@@ -588,15 +659,21 @@ function love.draw()
         local grassQuad = tilesetQuads[localId + 1]
         if grassQuad then
           local screenW, screenH = love.graphics.getWidth(), love.graphics.getHeight()
-          local viewCols = math.ceil(screenW / (tileWidth * mapScale))
-          local viewRows = math.ceil(screenH / (tileHeight * mapScale))
-          for row = 0, viewRows - 1 do
-            for col = 0, viewCols - 1 do
+          -- Calculate how many tiles we need to cover the entire screen
+          local viewW = screenW / mapScale
+          local viewH = screenH / mapScale
+          local startCol = math.floor(-mapDrawOffsetX / tileWidth) - 1
+          local startRow = math.floor(-mapDrawOffsetY / tileHeight) - 1
+          local endCol = math.ceil((viewW - mapDrawOffsetX) / tileWidth) + 1
+          local endRow = math.ceil((viewH - mapDrawOffsetY) / tileHeight) + 1
+          
+          for row = startRow, endRow do
+            for col = startCol, endCol do
               love.graphics.draw(
                 tilesetImage,
                 grassQuad,
-                math.floor(mapDrawOffsetX + col * tileWidth + 0.5),
-                math.floor(mapDrawOffsetY + row * tileHeight + 0.5)
+                mapDrawOffsetX + col * tileWidth,
+                mapDrawOffsetY + row * tileHeight
               )
             end
           end
