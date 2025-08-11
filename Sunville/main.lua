@@ -5,6 +5,7 @@
 local DraggableObject = require("DraggableObject")
 local ButtonManager = require("ButtonManager")
 local GameStateManager = require("GameStateManager")
+local SelectableObject = require("SelectableObject")
 
 local loadSucceeded = false
 local sceneMap = nil
@@ -67,6 +68,11 @@ function love.update(dt)
     gameStateManager:updateDrag(dt)
   end
   
+  -- Update trees
+  for _, tree in ipairs(trees) do
+    tree:updateSelection(dt)
+  end
+  
   -- Pause game logic when in grid mode (dragging mode)
   if gameStateManager and gameStateManager:isAnyObjectDragging() then
     return
@@ -116,6 +122,59 @@ function love.update(dt)
         npc.idleFrame = npc.idleFrame % npc.idleCount + 1
       end
     end
+  end
+end
+
+-- Helper function to draw a selectable object (like trees)
+function love.drawSelectableObject(object, tilesetImage, tilesetQuads, tilesetFirstGid, tileWidth, tileHeight, mapDrawOffsetX, mapDrawOffsetY, cornerTLImg, cornerTRImg, cornerBLImg, cornerBRImg)
+  if not object.mapData or not object.mapData.layers then return end
+  
+  for _, layer in ipairs(object.mapData.layers) do
+    if layer.type == "tilelayer" and layer.visible ~= false and layer.data then
+      local mapWidth = layer.width or object.mapData.width
+      local mapHeight = layer.height or object.mapData.height
+      for row = 0, mapHeight - 1 do
+        for col = 0, mapWidth - 1 do
+          local idx = row * mapWidth + col + 1
+          local gid = layer.data[idx] or 0
+          if gid ~= 0 then
+            local localId = gid - tilesetFirstGid
+            local quad = tilesetQuads[localId + 1]
+            if quad then
+              love.graphics.setColor(1, 1, 1, 1)
+              love.graphics.draw(
+                tilesetImage,
+                quad,
+                mapDrawOffsetX + (object.tileX + col) * tileWidth + (layer.offsetx or 0),
+                mapDrawOffsetY + (object.tileY + row) * tileHeight + (layer.offsety or 0)
+              )
+            end
+          end
+        end
+      end
+    end
+  end
+  
+  -- Draw selection corners if selected
+  if object.isSelected then
+    local hw = object:getWidth()
+    local hh = object:getHeight()
+    local px = mapDrawOffsetX + object.tileX * tileWidth
+    local py = mapDrawOffsetY + object.tileY * tileHeight
+    
+    -- Get animated offset for breathing effect
+    local animOffset = object:getSelectionCornerOffset()
+    
+    local function drawCorner(img, dx, dy)
+      if img then love.graphics.draw(img, px + dx, py + dy) end
+    end
+    love.graphics.setColor(1, 1, 1, 1)
+    
+    -- Apply outward animation to each corner
+    drawCorner(cornerTLImg, -2 - animOffset, -2 - animOffset)
+    if cornerTRImg then drawCorner(cornerTRImg, hw * tileWidth - cornerTRImg:getWidth() + 2 + animOffset, -2 - animOffset) end
+    if cornerBLImg then drawCorner(cornerBLImg, -2 - animOffset, hh * tileHeight - cornerBLImg:getHeight() + 2 + animOffset) end
+    if cornerBRImg then drawCorner(cornerBRImg, hw * tileWidth - cornerBRImg:getWidth() + 2 + animOffset, hh * tileHeight - cornerBRImg:getHeight() + 2 + animOffset) end
   end
 end
 
@@ -242,9 +301,86 @@ function love.mousepressed(x, y, button)
   -- Convert to tile coordinates
   local tileX, tileY = screenToTile(x, y)
   
-  -- Handle object selection/dragging
-  if gameStateManager then
-    gameStateManager:handleObjectClick(tileX, tileY)
+  -- First check tree selection
+  local treeClicked = false
+  for _, tree in ipairs(trees) do
+    if tree:isPointInside(tileX, tileY) then
+      -- Deselect all other trees
+      for _, otherTree in ipairs(trees) do
+        if otherTree ~= tree then
+          otherTree:cancelSelection()
+        end
+      end
+      -- Select this tree
+      tree:select(tileX, tileY)
+      treeClicked = true
+      break
+    end
+  end
+  
+  -- If no tree was clicked, deselect all trees and handle draggable objects
+  if not treeClicked then
+    for _, tree in ipairs(trees) do
+      tree:cancelSelection()
+    end
+    
+    -- Handle object selection/dragging
+    if gameStateManager then
+      gameStateManager:handleObjectClick(tileX, tileY)
+    end
+  end
+end
+
+-- Helper function to draw a selectable object (like trees)
+function love.drawSelectableObject(object, tilesetImage, tilesetQuads, tilesetFirstGid, tileWidth, tileHeight, mapDrawOffsetX, mapDrawOffsetY, cornerTLImg, cornerTRImg, cornerBLImg, cornerBRImg)
+  if not object.mapData or not object.mapData.layers then return end
+  
+  for _, layer in ipairs(object.mapData.layers) do
+    if layer.type == "tilelayer" and layer.visible ~= false and layer.data then
+      local mapWidth = layer.width or object.mapData.width
+      local mapHeight = layer.height or object.mapData.height
+      for row = 0, mapHeight - 1 do
+        for col = 0, mapWidth - 1 do
+          local idx = row * mapWidth + col + 1
+          local gid = layer.data[idx] or 0
+          if gid ~= 0 then
+            local localId = gid - tilesetFirstGid
+            local quad = tilesetQuads[localId + 1]
+            if quad then
+              love.graphics.setColor(1, 1, 1, 1)
+              love.graphics.draw(
+                tilesetImage,
+                quad,
+                mapDrawOffsetX + (object.tileX + col) * tileWidth + (layer.offsetx or 0),
+                mapDrawOffsetY + (object.tileY + row) * tileHeight + (layer.offsety or 0)
+              )
+            end
+          end
+        end
+      end
+    end
+  end
+  
+  -- Draw selection corners if selected
+  if object.isSelected then
+    local hw = object:getWidth()
+    local hh = object:getHeight()
+    local px = mapDrawOffsetX + object.tileX * tileWidth
+    local py = mapDrawOffsetY + object.tileY * tileHeight
+    
+    -- Get animated offset for breathing effect
+    local animOffset = object:getSelectionCornerOffset()
+    
+    local function drawCorner(img, dx, dy)
+      if img then love.graphics.draw(img, px + dx, py + dy) end
+    end
+    love.graphics.setColor(1, 1, 1, 1)
+    
+    -- Apply outward animation to each corner
+    drawCorner(cornerTLImg, -2 - animOffset, -2 - animOffset)
+    if cornerTRImg then drawCorner(cornerTRImg, hw * tileWidth - cornerTRImg:getWidth() + 2 + animOffset, -2 - animOffset) end
+    if cornerBLImg then drawCorner(cornerBLImg, -2 - animOffset, hh * tileHeight - cornerBLImg:getHeight() + 2 + animOffset) end
+    if cornerBRImg then drawCorner(cornerBRImg, hw * tileWidth - cornerBRImg:getWidth() + 2 + animOffset, hh * tileHeight - cornerBRImg:getHeight() + 2 + animOffset) end
   end
 end
 
@@ -415,10 +551,10 @@ function love.load()
     end
   end
 
-  -- Load tree map (2x2 tiles using the forest tileset, but we only need gid data)
+  -- Load tree map (2x3 tiles using the main tileset)
   do
     local ok, resultOrError = pcall(function()
-      return dofile("Lua Tileset/big-tree.lua")
+      return dofile("Lua Tileset/tree.lua")
     end)
     if ok and type(resultOrError) == "table" then
       treeMap = resultOrError
@@ -427,37 +563,9 @@ function love.load()
       else
         treeTilesetFirstGid = 1
       end
-      -- Load forest tileset image and build quads (32px tiles)
-      local forestImagePath = "Sunnyside_World_Assets/Tileset/spr_tileset_sunnysideworld_forest_32px.png"
-      local okForest, forestImgOrErr = pcall(function()
-        return love.graphics.newImage(forestImagePath)
-      end)
-      if okForest then
-        forestImage = forestImgOrErr
-        forestImage:setFilter("nearest", "nearest")
-        local imageWidth, imageHeight = forestImage:getDimensions()
-        local columns = math.floor(imageWidth / forestTileW)
-        local rows = math.floor(imageHeight / forestTileH)
-        forestQuads = {}
-        for row = 0, rows - 1 do
-          for col = 0, columns - 1 do
-            local id = row * columns + col
-            forestQuads[id + 1] = love.graphics.newQuad(
-              col * forestTileW,
-              row * forestTileH,
-              forestTileW,
-              forestTileH,
-              imageWidth,
-              imageHeight
-            )
-          end
-        end
-      else
-        print("Failed to load forest tileset image:", tostring(forestImgOrErr))
-      end
     else
       treeMap = nil
-      print("Failed to load big tree:", tostring(resultOrError))
+      print("Failed to load tree:", tostring(resultOrError))
     end
   end
 
@@ -486,8 +594,23 @@ function love.load()
     end
   end
 
-  -- Trees disabled for now
+  -- Create some tree objects using SelectableObject
   trees = {}
+  if treeMap then
+    -- Spawn trees at various locations
+    local treePositions = {
+      {x = 5, y = 8},
+      {x = 12, y = 15},
+      {x = 20, y = 10},
+      {x = 8, y = 20},
+      {x = 25, y = 5}
+    }
+    
+    for i, pos in ipairs(treePositions) do
+      local tree = SelectableObject.new(treeMap, pos.x, pos.y, "Tree " .. i)
+      table.insert(trees, tree)
+    end
+  end
   treeMask = nil
 
   if loadSucceeded then
@@ -707,6 +830,11 @@ function love.draw()
         end
       end
 
+      -- Draw trees
+      for _, tree in ipairs(trees) do
+        love.drawSelectableObject(tree, tilesetImage, tilesetQuads, tilesetFirstGid, tileWidth, tileHeight, mapDrawOffsetX, mapDrawOffsetY, cornerTLImg, cornerTRImg, cornerBLImg, cornerBRImg)
+      end
+
       -- Draw NPC after the map
       if npc then
         local sx = npc.facing
@@ -805,6 +933,15 @@ function love.draw()
           y = y + 20
         end
       end
+      
+      -- Show tree selection status
+      for i, tree in ipairs(trees) do
+        if tree.isSelected then
+          love.graphics.print(string.format("Selected: %s @ (%d,%d)", tree.name, tree.tileX, tree.tileY), 24, y)
+          y = y + 20
+          break
+        end
+      end
     end
   else
     love.graphics.setColor(1, 0.7, 0.7)
@@ -814,6 +951,59 @@ function love.draw()
       love.graphics.setColor(1, 0.6, 0.6)
       love.graphics.printf(loadErrorMessage, 24, y, love.graphics.getWidth() - 48)
     end
+  end
+end
+
+-- Helper function to draw a selectable object (like trees)
+function love.drawSelectableObject(object, tilesetImage, tilesetQuads, tilesetFirstGid, tileWidth, tileHeight, mapDrawOffsetX, mapDrawOffsetY, cornerTLImg, cornerTRImg, cornerBLImg, cornerBRImg)
+  if not object.mapData or not object.mapData.layers then return end
+  
+  for _, layer in ipairs(object.mapData.layers) do
+    if layer.type == "tilelayer" and layer.visible ~= false and layer.data then
+      local mapWidth = layer.width or object.mapData.width
+      local mapHeight = layer.height or object.mapData.height
+      for row = 0, mapHeight - 1 do
+        for col = 0, mapWidth - 1 do
+          local idx = row * mapWidth + col + 1
+          local gid = layer.data[idx] or 0
+          if gid ~= 0 then
+            local localId = gid - tilesetFirstGid
+            local quad = tilesetQuads[localId + 1]
+            if quad then
+              love.graphics.setColor(1, 1, 1, 1)
+              love.graphics.draw(
+                tilesetImage,
+                quad,
+                mapDrawOffsetX + (object.tileX + col) * tileWidth + (layer.offsetx or 0),
+                mapDrawOffsetY + (object.tileY + row) * tileHeight + (layer.offsety or 0)
+              )
+            end
+          end
+        end
+      end
+    end
+  end
+  
+  -- Draw selection corners if selected
+  if object.isSelected then
+    local hw = object:getWidth()
+    local hh = object:getHeight()
+    local px = mapDrawOffsetX + object.tileX * tileWidth
+    local py = mapDrawOffsetY + object.tileY * tileHeight
+    
+    -- Get animated offset for breathing effect
+    local animOffset = object:getSelectionCornerOffset()
+    
+    local function drawCorner(img, dx, dy)
+      if img then love.graphics.draw(img, px + dx, py + dy) end
+    end
+    love.graphics.setColor(1, 1, 1, 1)
+    
+    -- Apply outward animation to each corner
+    drawCorner(cornerTLImg, -2 - animOffset, -2 - animOffset)
+    if cornerTRImg then drawCorner(cornerTRImg, hw * tileWidth - cornerTRImg:getWidth() + 2 + animOffset, -2 - animOffset) end
+    if cornerBLImg then drawCorner(cornerBLImg, -2 - animOffset, hh * tileHeight - cornerBLImg:getHeight() + 2 + animOffset) end
+    if cornerBRImg then drawCorner(cornerBRImg, hw * tileWidth - cornerBRImg:getWidth() + 2 + animOffset, hh * tileHeight - cornerBRImg:getHeight() + 2 + animOffset) end
   end
 end
 
@@ -955,5 +1145,58 @@ function love.drawDraggableObject(object, tilesetImage, tilesetQuads, tilesetFir
       love.graphics.print(text, textX, textY)
       love.graphics.setColor(1, 1, 1, 1)
     end
+  end
+end
+
+-- Helper function to draw a selectable object (like trees)
+function love.drawSelectableObject(object, tilesetImage, tilesetQuads, tilesetFirstGid, tileWidth, tileHeight, mapDrawOffsetX, mapDrawOffsetY, cornerTLImg, cornerTRImg, cornerBLImg, cornerBRImg)
+  if not object.mapData or not object.mapData.layers then return end
+  
+  for _, layer in ipairs(object.mapData.layers) do
+    if layer.type == "tilelayer" and layer.visible ~= false and layer.data then
+      local mapWidth = layer.width or object.mapData.width
+      local mapHeight = layer.height or object.mapData.height
+      for row = 0, mapHeight - 1 do
+        for col = 0, mapWidth - 1 do
+          local idx = row * mapWidth + col + 1
+          local gid = layer.data[idx] or 0
+          if gid ~= 0 then
+            local localId = gid - tilesetFirstGid
+            local quad = tilesetQuads[localId + 1]
+            if quad then
+              love.graphics.setColor(1, 1, 1, 1)
+              love.graphics.draw(
+                tilesetImage,
+                quad,
+                mapDrawOffsetX + (object.tileX + col) * tileWidth + (layer.offsetx or 0),
+                mapDrawOffsetY + (object.tileY + row) * tileHeight + (layer.offsety or 0)
+              )
+            end
+          end
+        end
+      end
+    end
+  end
+  
+  -- Draw selection corners if selected
+  if object.isSelected then
+    local hw = object:getWidth()
+    local hh = object:getHeight()
+    local px = mapDrawOffsetX + object.tileX * tileWidth
+    local py = mapDrawOffsetY + object.tileY * tileHeight
+    
+    -- Get animated offset for breathing effect
+    local animOffset = object:getSelectionCornerOffset()
+    
+    local function drawCorner(img, dx, dy)
+      if img then love.graphics.draw(img, px + dx, py + dy) end
+    end
+    love.graphics.setColor(1, 1, 1, 1)
+    
+    -- Apply outward animation to each corner
+    drawCorner(cornerTLImg, -2 - animOffset, -2 - animOffset)
+    if cornerTRImg then drawCorner(cornerTRImg, hw * tileWidth - cornerTRImg:getWidth() + 2 + animOffset, -2 - animOffset) end
+    if cornerBLImg then drawCorner(cornerBLImg, -2 - animOffset, hh * tileHeight - cornerBLImg:getHeight() + 2 + animOffset) end
+    if cornerBRImg then drawCorner(cornerBRImg, hw * tileWidth - cornerBRImg:getWidth() + 2 + animOffset, hh * tileHeight - cornerBRImg:getHeight() + 2 + animOffset) end
   end
 end
