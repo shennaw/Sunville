@@ -11,7 +11,7 @@ local OBJECT_TYPE_ROCK = "rock"
 
 local OBJECT_ACTIONS = {
     [OBJECT_TYPE_HOUSE] = {"move"},
-    [OBJECT_TYPE_TREE] = {"axe", "water"},
+    [OBJECT_TYPE_TREE] = {"axe"},
     [OBJECT_TYPE_ROCK] = {"pickaxe"}
 }
 
@@ -56,8 +56,17 @@ function ActionableObject.new(mapData, tileX, tileY, name, objectType)
         
         -- Action state
         currentAction = nil,
-        actionInProgress = false
+        actionInProgress = false,
+        
+        -- Health system for trees
+        maxHealth = (objectType == OBJECT_TYPE_TREE) and 100 or nil,
+        currentHealth = (objectType == OBJECT_TYPE_TREE) and 100 or nil
     }
+    
+    -- Debug: Check tree health initialization
+    if objectType == OBJECT_TYPE_TREE then
+        print("Creating tree: " .. name .. " with health " .. tostring(obj.currentHealth) .. "/" .. tostring(obj.maxHealth))
+    end
     
     setmetatable(obj, ActionableObject)
     return obj
@@ -170,13 +179,37 @@ function ActionableObject:performAxeAction(callback)
     self.actionInProgress = true
     self.currentAction = "axe"
     
-    -- Simulate axing animation/delay
-    print("Chopping down " .. self.name .. "...")
-    
-    -- After animation completes, remove the tree
-    -- For now, we'll just call the callback immediately
-    if callback then
-        callback(self, "axe", true) -- success
+    -- Damage the tree
+    if self.currentHealth then
+        self.currentHealth = self.currentHealth - 50
+        print("Chopping " .. self.name .. "... Health: " .. self.currentHealth .. "/" .. self.maxHealth)
+        
+        if self.currentHealth <= 0 then
+            -- Tree is destroyed, give wood points
+            local woodGain = love.math.random(80, 100)
+            if _G.playerWoodPoints then
+                _G.playerWoodPoints = _G.playerWoodPoints + woodGain
+            else
+                _G.playerWoodPoints = woodGain
+            end
+            print("Tree destroyed! Gained " .. woodGain .. " wood points")
+            
+            -- Create wood drop animation at tree position
+            if _G.createWoodDrop then
+                _G.createWoodDrop(self.tileX, self.tileY, self:getWidth(), self:getHeight(), woodGain)
+            end
+            
+            if callback then
+                callback(self, "axe", true) -- Tree destroyed
+            end
+        else
+            if callback then
+                callback(self, "axe", false) -- Tree damaged but not destroyed
+            end
+        end
+    else
+        print("ERROR: Tree has no currentHealth property!")
+        return false
     end
     
     return true

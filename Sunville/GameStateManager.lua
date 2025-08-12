@@ -144,7 +144,14 @@ function GameStateManager:selectObject(object, tileX, tileY)
 end
 
 function GameStateManager:performAction(object, action)
-    if not object or not self.selectedObject or object ~= self.selectedObject then
+    if not object then
+        return false
+    end
+    
+    -- For axe actions, allow even if not selected (continuous axing)
+    if action == "axe" then
+        -- Continue with axe action regardless of selection state
+    elseif not self.selectedObject or object ~= self.selectedObject then
         return false
     end
     
@@ -157,19 +164,32 @@ function GameStateManager:performAction(object, action)
             return true
         end
     else
-        -- Handle other actions like axe, water, pickaxe
-        local success = object:performAction(action, function(obj, actionType, success)
-            if success then
-                if actionType == "axe" or actionType == "pickaxe" then
-                    -- Remove the object from the game
+        -- Handle all actions through the object's performAction method
+        local success = object:performAction(action, function(obj, actionType, treeDestroyed)
+            if actionType == "axe" then
+                if treeDestroyed then
+                    -- Tree was destroyed, remove it from the game
                     for id, gameObj in pairs(self.actionableObjects) do
                         if gameObj == obj then
                             self:removeActionableObject(id)
                             break
                         end
                     end
+                    -- Note: Don't clear selection here since continuous axing handles it
+                else
+                    -- Tree was damaged but not destroyed, keep it selected
+                    -- The continuous axing system will handle the repetition
+                    print("Tree damaged, health: " .. (obj.currentHealth or 0))
                 end
-                -- Clear selection after any successful action
+            elseif actionType == "pickaxe" and treeDestroyed then
+                -- Remove the object from the game for other destroy actions
+                for id, gameObj in pairs(self.actionableObjects) do
+                    if gameObj == obj then
+                        self:removeActionableObject(id)
+                        break
+                    end
+                end
+                -- Clear selection after any successful destructive action
                 self:deselectAllObjects()
                 self:updateButtonStates()
             end

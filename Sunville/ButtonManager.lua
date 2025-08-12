@@ -37,7 +37,8 @@ function ButtonManager:addButton(id, config)
         icon = config.icon,
         showHand = config.showHand or false,
         action = config.action,
-        state = ButtonManager.STATE_VISIBLE,
+        actionType = config.actionType, -- Add action type for identification
+        state = config.state or ButtonManager.STATE_VISIBLE,
         visible = config.visible or true,
         scale = config.scale or self.defaultScale
     }
@@ -76,9 +77,15 @@ end
 
 function ButtonManager:handleClick(x, y)
     local button = self:getButtonAtPosition(x, y)
-    if button and button.action then
-        button.action()
-        return button
+    if button then
+        -- Check if this is an axe action that should be handled externally
+        if button.actionType == "axe" then
+            -- Don't call button.action() for axe actions - let main.lua handle it
+            return button
+        elseif button.action then
+            button.action()
+            return button
+        end
     end
     return nil
 end
@@ -100,7 +107,8 @@ function ButtonManager:createSelectionButtons(screenW, screenH, labelImages, ico
     self:clearButtonsByType(ButtonManager.TYPE_SELECTION)
     
     local scale = mapScale or self.defaultScale
-    local btnHeight = labelImages.left and (labelImages.left:getHeight() * scale) or 80
+    local baseHeight = labelImages.left and (labelImages.left:getHeight() * scale) or 80
+    local btnHeight = baseHeight * 2  -- 2x button height
     local btnY = screenH - btnHeight - 8
     local leftW = math.floor(screenW * 0.5) - 16 -- Reduced width to create gap
     
@@ -135,7 +143,8 @@ function ButtonManager:createDraggingButtons(screenW, screenH, labelImages, icon
     self:clearButtonsByType(ButtonManager.TYPE_DRAGGING)
     
     local scale = mapScale or self.defaultScale
-    local btnHeight = labelImages.left and (labelImages.left:getHeight() * scale) or 80
+    local baseHeight = labelImages.left and (labelImages.left:getHeight() * scale) or 80
+    local btnHeight = baseHeight * 2  -- 2x button height
     local btnY = screenH - btnHeight - 8
     local leftW = math.floor(screenW * 0.5) - 16 -- Reduced width to create gap
     
@@ -170,7 +179,8 @@ function ButtonManager:createActionButtons(screenW, screenH, labelImages, icons,
     self:clearButtonsByType(ButtonManager.TYPE_ACTION)
     
     local scale = mapScale or self.defaultScale
-    local btnHeight = labelImages.left and (labelImages.left:getHeight() * scale) or 80
+    local baseHeight = labelImages.left and (labelImages.left:getHeight() * scale) or 80
+    local btnHeight = baseHeight * 2  -- 2x button height
     local btnY = screenH - btnHeight - 8
     
     -- Count the number of actions to determine button layout
@@ -210,9 +220,7 @@ function ButtonManager:createActionButtons(screenW, screenH, labelImages, icons,
         if actionName == "move" then
             showHand = true
         elseif actionName == "axe" then
-            icon = icons.axe or icons.confirm -- fallback to confirm icon
-        elseif actionName == "water" then
-            icon = icons.water or icons.confirm
+            icon = icons.axe or icons.confirm -- use axe.png icon
         elseif actionName == "pickaxe" then
             icon = icons.pickaxe or icons.confirm
         elseif actionName == "cancel" then
@@ -228,6 +236,7 @@ function ButtonManager:createActionButtons(screenW, screenH, labelImages, icons,
             icon = icon,
             showHand = showHand,
             action = actionData.callback,
+            actionType = actionName, -- Include action type
             scale = scale
         })
     end
@@ -247,14 +256,15 @@ function ButtonManager:drawButton(button, labelImages, handImage)
     end
     
     local scale = button.scale
+    local scaleY = scale * 2  -- 2x vertical scale to match button height
     local leftW = math.floor(labelImages.left:getWidth() * scale)
     local rightW = math.floor(labelImages.right:getWidth() * scale)
     local midW = math.max(0, button.width - leftW - rightW)
     
-    -- Draw left cap
-    love.graphics.draw(labelImages.left, button.x, button.y, 0, scale, scale)
+    -- Draw left cap with 2x height
+    love.graphics.draw(labelImages.left, button.x, button.y, 0, scale, scaleY)
     
-    -- Draw middle section (tiled to fill the space)
+    -- Draw middle section (tiled to fill the space) with 2x height
     if midW > 0 then
         local tileW = math.floor(labelImages.middle:getWidth() * scale)
         if tileW > 0 then
@@ -268,28 +278,30 @@ function ButtonManager:drawButton(button, labelImages, handImage)
                         math.min(labelImages.middle:getWidth(), clipW / scale), 
                         labelImages.middle:getHeight(), 
                         labelImages.middle:getWidth(), labelImages.middle:getHeight())
-                    love.graphics.draw(labelImages.middle, quad, dx, button.y, 0, scale, scale)
+                    love.graphics.draw(labelImages.middle, quad, dx, button.y, 0, scale, scaleY)
                 end
             end
         end
     end
     
-    -- Draw right cap - ensure it's positioned exactly at the end
+    -- Draw right cap - ensure it's positioned exactly at the end, with 2x height
     local rightX = button.x + button.width - rightW
-    love.graphics.draw(labelImages.right, rightX, button.y, 0, scale, scale)
+    love.graphics.draw(labelImages.right, rightX, button.y, 0, scale, scaleY)
     
-    -- Draw icon
+    -- Draw icon (scale icons to match button proportions)
     if button.icon then
-        local iconX = button.x + button.width * 0.5 - (button.icon:getWidth() * scale) * 0.5
-        local iconY = button.y + (button.height - button.icon:getHeight() * scale) * 0.5
-        love.graphics.draw(button.icon, iconX, iconY, 0, scale, scale)
+        local iconScale = scale * 1.5  -- Scale icons slightly larger for taller buttons
+        local iconX = button.x + button.width * 0.5 - (button.icon:getWidth() * iconScale) * 0.5
+        local iconY = button.y + (button.height - button.icon:getHeight() * iconScale) * 0.5
+        love.graphics.draw(button.icon, iconX, iconY, 0, iconScale, iconScale)
     end
     
-    -- Draw hand icon if requested
+    -- Draw hand icon if requested (scale hand icons to match button proportions)
     if button.showHand and handImage then
-        local handX = button.x + button.width * 0.5 - handImage:getWidth() * scale * 0.5
-        local handY = button.y + (button.height - handImage:getHeight() * scale) * 0.5
-        love.graphics.draw(handImage, handX, handY, 0, scale, scale)
+        local handScale = scale * 1.5  -- Scale hand icons slightly larger for taller buttons
+        local handX = button.x + button.width * 0.5 - handImage:getWidth() * handScale * 0.5
+        local handY = button.y + (button.height - handImage:getHeight() * handScale) * 0.5
+        love.graphics.draw(handImage, handX, handY, 0, handScale, handScale)
     end
 end
 

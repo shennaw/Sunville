@@ -41,8 +41,27 @@ local waterGids = {
   [195] = true,
 }
 
+-- Wood points system
+_G.playerWoodPoints = 0
+local woodIconMap = nil
+local woodIconImage = nil
+
+-- Wood drop animation system
+local woodDrops = {} -- Array of {x, y, targetX, targetY, speed, woodGid, quad}
+
+-- Make createWoodDrop globally accessible
+_G.createWoodDrop = nil -- Will be set after function is defined
+
 -- Simple NPC composed of base + hair walking sprites
-local npc = nil
+local player = nil -- Renamed from npc to player
+local playerTargetX, playerTargetY = nil, nil -- Target position for movement
+local playerMoving = false -- Whether player is currently moving to a target
+local playerActionTarget = nil -- The object the player is moving to perform action on
+local playerActionType = nil -- The type of action to perform when reaching target
+local playerActionInProgress = false -- Whether an action is currently being performed
+local playerActionTimer = 0 -- Timer for action duration
+local playerActionDuration = 2.0 -- How long axe action takes
+local playerFacingDirection = 1 -- 1 for right, -1 for left
 
 -- Trees
 local treeMap = nil
@@ -91,11 +110,378 @@ local function checkNPCCollisionWithObjects(npcX, npcY, npcWidth, npcHeight, gam
   return false -- No collision
 end
 
+local function checkPlayerCollisionWithObjects(playerX, playerY, playerWidth, playerHeight, gameStateManager)
+  if not gameStateManager then return false end
+  
+  -- Convert player pixel position to tile coordinates for collision checking
+  local tileWidth = sceneMap.tilewidth or 16
+  local tileHeight = sceneMap.tileheight or 16
+  
+  -- Calculate the tile area the player would occupy
+  local playerLeft = math.floor(playerX / tileWidth)
+  local playerTop = math.floor(playerY / tileHeight)
+  local playerRight = math.floor((playerX + playerWidth - 1) / tileWidth)
+  local playerBottom = math.floor((playerY + playerHeight - 1) / tileHeight)
+  
+  -- Check collision with all actionable objects
+  for id, object in pairs(gameStateManager.actionableObjects) do
+    local objLeft = object.tileX
+    local objTop = object.tileY
+    local objRight = objLeft + object:getWidth() - 1
+    local objBottom = objTop + object:getHeight() - 1
+    
+    -- Check if player area overlaps with object area
+    if playerLeft <= objRight and playerRight >= objLeft and 
+       playerTop <= objBottom and playerBottom >= objTop then
+      return true, object -- Collision detected
+    end
+  end
+  
+  return false -- No collision
+end
+
+local function movePlayerToTarget(dt)
+  if not playerMoving or not playerTargetX or not playerTargetY then return end
+  
+  local dx = playerTargetX - player.x
+  local dy = playerTargetY - player.y
+  local distance = math.sqrt(dx * dx + dy * dy)
+  
+  if distance < 5 then -- Close enough to target
+    -- Snap player to exact target position
+    player.x = playerTargetX
+    player.y = playerTargetY
+    
+    playerMoving = false
+    playerTargetX = nil
+    playerTargetY = nil
+    
+    -- Start performing the action
+    if playerActionTarget and playerActionType then
+      -- Set facing direction for axing based on player position relative to tree
+      if playerActionType == "axe" then
+        local tileWidth = sceneMap.tilewidth or 16
+        local playerGridX = math.floor(player.x / tileWidth)
+        local treeLeftEdge = playerActionTarget.tileX
+        local treeRightEdge = playerActionTarget.tileX + playerActionTarget:getWidth() - 1
+        local treeCenterX = playerActionTarget.tileX + math.floor(playerActionTarget:getWidth() / 2)
+        
+        -- If player is on the left side of tree center, face right
+        -- If player is on the right side of tree center, face left
+        if playerGridX < treeCenterX then
+          playerFacingDirection = 1 -- Face right
+        else
+          playerFacingDirection = -1 -- Face left
+        end
+      end
+      
+      playerActionInProgress = true
+      playerActionTimer = 0
+      print("Player reached target, starting " .. playerActionType .. " action on " .. playerActionTarget.name)
+      print("Final player position: (" .. player.x .. ", " .. player.y .. ")")
+    end
+    
+    return
+  end
+  
+  -- Simple direct movement - phase through obstacles
+  local speed = player.speed
+  local moveDistance = speed * dt
+  
+  if distance > 0 then
+    local normalizedDx = dx / distance
+    local normalizedDy = dy / distance
+    
+    local moveX = normalizedDx * moveDistance
+    local moveY = normalizedDy * moveDistance
+    
+    -- Update facing direction
+    if math.abs(normalizedDx) > 0.1 then
+      playerFacingDirection = normalizedDx > 0 and 1 or -1
+    end
+    
+    -- Apply movement with bounds checking only
+    local newX = player.x + moveX
+    local newY = player.y + moveY
+    
+    local worldW = sceneMap.width * sceneMap.tilewidth
+    local worldH = sceneMap.height * sceneMap.tileheight
+    
+    player.x = clamp(newX, 0, worldW - player.width)
+    player.y = clamp(newY, 0, worldH - player.height)
+    
+    -- Update walking animation while moving
+    player.frameTime = player.frameTime + dt
+    while player.frameTime >= player.frameDuration do
+      player.frameTime = player.frameTime - player.frameDuration
+      player.frame = player.frame % player.frameCount + 1
+    end
+    
+    -- Reset idle animation
+    player.idleTime = 0
+    player.idleFrame = 1
+  end
+  
+end
+
+local function updatePlayerAction(dt)
+  if not playerActionInProgress then return end
+  
+  playerActionTimer = playerActionTimer + dt
+  
+  -- Update axe animation frames
+  if playerActionType == "axe" and player then
+    player.axeFrameTime = player.axeFrameTime + dt
+    while player.axeFrameTime >= player.axeFrameDuration do
+      player.axeFrameTime = player.axeFrameTime - player.axeFrameDuration
+      player.axeFrame = player.axeFrame % player.axeCount + 1
+    end
+  end
+  
+  if playerActionTimer >= playerActionDuration then
+    -- Single axe swing completed
+    if playerActionTarget and playerActionType == "axe" then
+      -- Perform one axe hit through the game state manager
+      if gameStateManager then
+        gameStateManager:performAction(playerActionTarget, playerActionType)
+      end
+      
+      -- Check if tree still exists and has health
+      if playerActionTarget and playerActionTarget.currentHealth and playerActionTarget.currentHealth > 0 then
+        -- Tree is still alive, continue axing
+        playerActionTimer = 0 -- Reset timer for next swing
+        player.axeFrame = 1 -- Reset animation
+        player.axeFrameTime = 0
+        print("Continuing to axe tree...")
+      else
+        -- Tree is destroyed or action target is gone, stop axing
+        playerActionInProgress = false
+        playerActionTimer = 0
+        playerActionTarget = nil
+        playerActionType = nil
+        
+        -- Reset axe animation
+        if player then
+          player.axeFrame = 1
+          player.axeFrameTime = 0
+        end
+        print("Axing completed!")
+      end
+    else
+      -- Non-axe actions work as before
+      playerActionInProgress = false
+      playerActionTimer = 0
+      
+      if playerActionTarget and playerActionType then
+        if gameStateManager then
+          gameStateManager:performAction(playerActionTarget, playerActionType)
+        end
+        
+        playerActionTarget = nil
+        playerActionType = nil
+        
+        if player then
+          player.axeFrame = 1
+          player.axeFrameTime = 0
+        end
+      end
+    end
+  end
+end
+
+local function findBestTreePosition(object, playerGridX, playerGridY)
+  -- Position player at bottom of tree, either leftmost or rightmost grid of the tree
+  local tileWidth = sceneMap.tilewidth or 16
+  local tileHeight = sceneMap.tileheight or 16
+  local objectWidth = object:getWidth()
+  local objectHeight = object:getHeight()
+  
+  -- Y position is at the bottom row of the tree
+  local targetY = object.tileY + objectHeight - 1
+  
+  -- Determine if player should be on leftmost or rightmost grid of tree
+  local leftmostPosition = object.tileX
+  local rightmostPosition = object.tileX + objectWidth - 1
+  
+  -- Calculate distances to leftmost and rightmost positions
+  local distanceToLeft = math.abs(leftmostPosition - playerGridX)
+  local distanceToRight = math.abs(rightmostPosition - playerGridX)
+  
+  local targetX
+  if distanceToLeft <= distanceToRight then
+    targetX = leftmostPosition -- Position at leftmost grid of tree
+  else
+    targetX = rightmostPosition + 1 -- Position one grid to the right of tree
+  end
+  
+  -- Convert to pixel coordinates
+  local pixelX = targetX * tileWidth
+  local pixelY = targetY * tileHeight
+  
+  return targetX, targetY, pixelX, pixelY
+end
+
+local function createWoodDrop(treeTileX, treeTileY, treeWidth, treeHeight, woodAmount)
+  if not woodIconMap or not tilesetImage or not tilesetQuads then return end
+  
+  -- Get wood sprite info
+  local woodGid = woodIconMap.layers[1].data[1] -- GID from wood.lua
+  if not woodGid or woodGid <= 0 then return end
+  
+  local localId = woodGid - tilesetFirstGid
+  local quad = tilesetQuads[localId + 1]
+  if not quad then return end
+  
+  -- Convert tree grid position to world position
+  local tileWidth = sceneMap.tilewidth or 16
+  local tileHeight = sceneMap.tileheight or 16
+  local treeWorldX = treeTileX * tileWidth + (treeWidth * tileWidth / 2) -- Center of tree
+  local treeWorldY = treeTileY * tileHeight + (treeHeight * tileHeight / 2)
+  
+  -- Calculate target position (wood icon location)
+  local iconX = love.graphics.getWidth() - 150 + 12 -- Center of wood icon
+  local iconY = 20 + 12
+  
+  -- Create multiple wood drops based on amount
+  local numDrops = math.min(3, math.max(1, math.floor(woodAmount / 30))) -- 1-3 drops
+  
+  for i = 1, numDrops do
+    -- Random offset around tree center
+    local offsetX = love.math.random(-tileWidth, tileWidth)
+    local offsetY = love.math.random(-tileHeight, tileHeight)
+    
+    local drop = {
+      x = treeWorldX + offsetX,
+      y = treeWorldY + offsetY,
+      targetX = iconX,
+      targetY = iconY,
+      speed = 200, -- pixels per second
+      woodGid = woodGid,
+      quad = quad,
+      startTime = love.timer.getTime() + (i * 0.2) -- Stagger the drops
+    }
+    
+    table.insert(woodDrops, drop)
+  end
+end
+
+local function updateWoodDrops(dt)
+  for i = #woodDrops, 1, -1 do
+    local drop = woodDrops[i]
+    
+    -- Check if drop should start moving
+    if love.timer.getTime() < drop.startTime then
+      goto continue
+    end
+    
+    -- Calculate movement direction
+    local dx = drop.targetX - drop.x
+    local dy = drop.targetY - drop.y
+    local distance = math.sqrt(dx * dx + dy * dy)
+    
+    if distance < 5 then
+      -- Drop reached the icon, remove it
+      table.remove(woodDrops, i)
+    else
+      -- Move towards target
+      local moveDistance = drop.speed * dt
+      local normalizedDx = dx / distance
+      local normalizedDy = dy / distance
+      
+      drop.x = drop.x + normalizedDx * moveDistance
+      drop.y = drop.y + normalizedDy * moveDistance
+    end
+    
+    ::continue::
+  end
+end
+
+local function drawWoodDrops()
+  if not tilesetImage then return end
+  
+  for _, drop in ipairs(woodDrops) do
+    -- Only draw if drop should be visible
+    if love.timer.getTime() >= drop.startTime then
+      love.graphics.setColor(1, 1, 1, 1)
+      love.graphics.draw(tilesetImage, drop.quad, drop.x, drop.y, 0, 1.5, 1.5) -- 1.5x scale
+    end
+  end
+end
+
+local function stopPlayerAction()
+  if playerActionInProgress then
+    playerActionInProgress = false
+    playerActionTimer = 0
+    playerActionTarget = nil
+    playerActionType = nil
+    
+    -- Reset axe animation
+    if player then
+      player.axeFrame = 1
+      player.axeFrameTime = 0
+    end
+    
+    print("Player action stopped")
+    return true
+  end
+  return false
+end
+
+-- Set global reference
+_G.createWoodDrop = createWoodDrop
+
+local function startPlayerAction(object, actionType)
+  if not object or not actionType then return false end
+  
+  -- Convert player's current pixel position to grid coordinates
+  local tileWidth = sceneMap.tilewidth or 16
+  local tileHeight = sceneMap.tileheight or 16
+  local playerGridX = math.floor(player.x / tileWidth)
+  local playerGridY = math.floor(player.y / tileHeight)
+  
+  -- Calculate target grid position
+  local targetGridX, targetGridY, targetPixelX, targetPixelY
+  
+  if object.objectType == "tree" then
+    -- For trees, find the best accessible position around the tree
+    targetGridX, targetGridY, targetPixelX, targetPixelY = findBestTreePosition(object, playerGridX, playerGridY)
+  else
+    -- For other objects, use side positioning
+    if playerGridX < object.tileX + math.floor(object:getWidth() / 2) then
+      targetGridX = object.tileX - 1 -- To the left
+    else
+      targetGridX = object.tileX + object:getWidth() -- To the right
+    end
+    targetGridY = object.tileY + math.floor(object:getHeight() / 2) -- Center vertically
+    targetPixelX = targetGridX * tileWidth
+    targetPixelY = targetGridY * tileHeight
+  end
+  
+  -- Set target position
+  playerTargetX = targetPixelX
+  playerTargetY = targetPixelY
+  
+  -- Set action details
+  playerActionTarget = object
+  playerActionType = actionType
+  playerMoving = true
+  
+  print("Player moving to " .. object.name .. " to perform " .. actionType .. " action")
+  print("Player grid position: (" .. playerGridX .. ", " .. playerGridY .. ")")
+  print("Target grid position: (" .. targetGridX .. ", " .. targetGridY .. ")")
+  print("Target pixel position: (" .. playerTargetX .. ", " .. playerTargetY .. ")")
+  
+  return true
+end
+
 function love.update(dt)
   -- Update game state
   if gameStateManager then
     gameStateManager:updateDrag(dt)
   end
+  
+  -- Update wood drops animation
+  updateWoodDrops(dt)
   
   -- Trees are now handled by gameStateManager, no separate update needed
   
@@ -104,94 +490,136 @@ function love.update(dt)
     return
   end
   
-  if npc and sceneMap then
-    -- Randomly change direction every 1-3 seconds
-    npc.changeDirCooldown = npc.changeDirCooldown - dt
-    if npc.changeDirCooldown <= 0 then
-      npc.changeDirCooldown = love.math.random(1, 3)
-      local dirs = {
-        {x = 1, y = 0}, {x = -1, y = 0}, {x = 0, y = 1}, {x = 0, y = -1}, {x = 0, y = 0}
-      }
-      
-      -- Filter out directions that would immediately cause collisions
-      local validDirs = {}
-      for _, dir in ipairs(dirs) do
-        local testX = npc.x + dir.x * npc.speed * 0.1 -- Test 0.1 second ahead
-        local testY = npc.y + dir.y * npc.speed * 0.1
-        local worldW = sceneMap.width * sceneMap.tilewidth
-        local worldH = sceneMap.height * sceneMap.tileheight
-        testX = clamp(testX, 0, worldW - npc.width)
-        testY = clamp(testY, 0, worldH - npc.height)
+  if player and sceneMap then
+    -- Update player movement
+    movePlayerToTarget(dt)
+    updatePlayerAction(dt)
+
+    -- Only allow random movement when not performing actions
+    if not playerActionInProgress and not playerMoving then
+      -- Randomly change direction every 1-3 seconds
+      player.changeDirCooldown = player.changeDirCooldown - dt
+      if player.changeDirCooldown <= 0 then
+        player.changeDirCooldown = love.math.random(1, 3)
+        local dirs = {
+          {x = 1, y = 0}, {x = -1, y = 0}, {x = 0, y = 1}, {x = 0, y = -1}, {x = 0, y = 0}
+        }
         
-        if not checkNPCCollisionWithObjects(testX, testY, npc.width, npc.height, gameStateManager) then
-          table.insert(validDirs, dir)
+        -- Filter out directions that would immediately cause collisions
+        local validDirs = {}
+        for _, dir in ipairs(dirs) do
+          local testX = player.x + dir.x * player.speed * 0.1 -- Test 0.1 second ahead
+          local testY = player.y + dir.y * player.speed * 0.1
+          local worldW = sceneMap.width * sceneMap.tilewidth
+          local worldH = sceneMap.height * sceneMap.tileheight
+          testX = clamp(testX, 0, worldW - player.width)
+          testY = clamp(testY, 0, worldH - player.height)
+          
+          if not checkPlayerCollisionWithObjects(testX, testY, player.width, player.height, gameStateManager) then
+            table.insert(validDirs, dir)
+          end
         end
+        
+        -- If no valid directions, include stop (0,0) as an option
+        if #validDirs == 0 then
+          validDirs = {{x = 0, y = 0}}
+        end
+        
+        local pick = validDirs[love.math.random(#validDirs)]
+        player.dirX, player.dirY = pick.x, pick.y
       end
-      
-      -- If no valid directions, include stop (0,0) as an option
-      if #validDirs == 0 then
-        validDirs = {{x = 0, y = 0}}
-      end
-      
-      local pick = validDirs[love.math.random(#validDirs)]
-      npc.dirX, npc.dirY = pick.x, pick.y
-    end
 
-    local dx = npc.dirX * npc.speed * dt
-    local dy = npc.dirY * npc.speed * dt
-    local newX = npc.x + dx
-    local newY = npc.y + dy
+                                  -- Grid-based movement: move in only one direction at a time
+       local speed = player.speed
+       local moveX, moveY = 0, 0
+       
+       -- Determine which direction to move (prioritize the larger difference)
+       if math.abs(player.dirX) > math.abs(player.dirY) then
+         -- Move horizontally first
+         if player.dirX > 0 then
+           moveX = speed * dt
+         else
+           moveX = -speed * dt
+         end
+       else
+         -- Move vertically first
+         if player.dirY > 0 then
+           moveY = speed * dt
+         else
+           moveY = -speed * dt
+         end
+       end
+       
+       -- Apply movement
+       if moveX ~= 0 then
+         local newX = player.x + moveX
+         -- Keep inside bounds
+         local worldW = sceneMap.width * sceneMap.tilewidth
+         newX = clamp(newX, 0, worldW - player.width)
+         
+         -- Check for collision
+         if not checkPlayerCollisionWithObjects(newX, player.y, player.width, player.height, gameStateManager) then
+           player.x = newX
+         else
+           -- Can't move horizontally, try vertical
+           if player.dirY ~= 0 then
+             local testY = player.y + (player.dirY > 0 and speed * dt or -speed * dt)
+             local worldH = sceneMap.height * sceneMap.tileheight
+             testY = clamp(testY, 0, worldH - player.height)
+             if not checkPlayerCollisionWithObjects(player.x, testY, player.width, player.height, gameStateManager) then
+               player.y = testY
+             else
+               -- Can't move in either direction, stop moving and pick a new direction
+               player.dirX, player.dirY = 0, 0
+               player.changeDirCooldown = 0.1 -- Force direction change soon
+             end
+           end
+         end
+       elseif moveY ~= 0 then
+         local newY = player.y + moveY
+         -- Keep inside bounds
+         local worldH = sceneMap.height * sceneMap.tileheight
+         newY = clamp(newY, 0, worldH - player.height)
+         
+         -- Check for collision
+         if not checkPlayerCollisionWithObjects(player.x, newY, player.width, player.height, gameStateManager) then
+           player.y = newY
+         else
+           -- Can't move vertically, try horizontal
+           if player.dirX ~= 0 then
+             local testX = player.x + (player.dirX > 0 and speed * dt or -speed * dt)
+             local worldW = sceneMap.width * sceneMap.tilewidth
+             testX = clamp(testX, 0, worldW - player.width)
+             if not checkPlayerCollisionWithObjects(testX, player.y, player.width, player.height, gameStateManager) then
+               player.x = testX
+             else
+               -- Can't move in either direction, stop moving and pick a new direction
+               player.dirX, player.dirY = 0, 0
+               player.changeDirCooldown = 0.1 -- Force direction change soon
+             end
+           end
+         end
+       end
 
-    -- Keep inside bounds
-    local worldW = sceneMap.width * sceneMap.tilewidth
-    local worldH = sceneMap.height * sceneMap.tileheight
-    newX = clamp(newX, 0, worldW - npc.width)
-    newY = clamp(newY, 0, worldH - npc.height)
-
-    -- Check for collision with ActionableObjects
-    local wouldCollide = checkNPCCollisionWithObjects(newX, newY, npc.width, npc.height, gameStateManager)
-    
-    if not wouldCollide then
-      -- No collision, safe to move
-      npc.x, npc.y = newX, newY
-    else
-      -- Collision detected, try moving in only one direction at a time
-      local onlyX = npc.x + dx
-      local onlyY = npc.y + dy
-      
-      -- Try moving only horizontally
-      if not checkNPCCollisionWithObjects(onlyX, npc.y, npc.width, npc.height, gameStateManager) then
-        onlyX = clamp(onlyX, 0, worldW - npc.width)
-        npc.x = onlyX
-      -- Try moving only vertically
-      elseif not checkNPCCollisionWithObjects(npc.x, onlyY, npc.width, npc.height, gameStateManager) then
-        onlyY = clamp(onlyY, 0, worldH - npc.height)
-        npc.y = onlyY
-      else
-        -- Can't move in either direction, stop moving and pick a new direction
-        npc.dirX, npc.dirY = 0, 0
-        npc.changeDirCooldown = 0.1 -- Force direction change soon
-      end
-    end
-
-    local moving = (npc.dirX ~= 0 or npc.dirY ~= 0)
-    if npc.dirX > 0 then npc.facing = 1 elseif npc.dirX < 0 then npc.facing = -1 end
-    if moving then
-      npc.frameTime = npc.frameTime + dt
-      while npc.frameTime >= npc.frameDuration do
-        npc.frameTime = npc.frameTime - npc.frameDuration
-        npc.frame = npc.frame % npc.frameCount + 1
-      end
-      npc.idleTime = 0
-      npc.idleFrame = 1
-    else
-      npc.frame = 1
-      npc.frameTime = 0
-      npc.idleTime = npc.idleTime + dt
-      while npc.idleTime >= npc.idleDuration do
-        npc.idleTime = npc.idleTime - npc.idleDuration
-        npc.idleFrame = npc.idleFrame % npc.idleCount + 1
-      end
+       local moving = (player.dirX ~= 0 or player.dirY ~= 0)
+       if player.dirX > 0 then player.facing = 1 elseif player.dirX < 0 then player.facing = -1 end
+       if moving then
+         player.frameTime = player.frameTime + dt
+         while player.frameTime >= player.frameDuration do
+           player.frameTime = player.frameTime - player.frameDuration
+           player.frame = player.frame % player.frameCount + 1
+         end
+         player.idleTime = 0
+         player.idleFrame = 1
+       else
+         player.frame = 1
+         player.frameTime = 0
+         player.idleTime = player.idleTime + dt
+         while player.idleTime >= player.idleDuration do
+           player.idleTime = player.idleTime - player.idleDuration
+           player.idleFrame = player.idleFrame % player.idleCount + 1
+         end
+       end
     end
   end
 end
@@ -312,7 +740,33 @@ function love.mousepressed(x, y, button)
   if gameStateManager then
     local clickedButton = gameStateManager:handleButtonClick(x, y)
     if clickedButton then
+      -- Handle different button types
+      if clickedButton.actionType == "axe" and gameStateManager.selectedObject then
+        local selectedObj = gameStateManager.selectedObject
+        if selectedObj.objectType == "tree" then
+          -- Start player movement to the tree (don't perform axe action yet)
+          startPlayerAction(selectedObj, "axe")
+          -- Clear the selection since player is now moving
+          gameStateManager:cancelSelection()
+          return
+        end
+      elseif clickedButton.actionType == "cancel" then
+        -- Cancel any ongoing action
+        stopPlayerAction()
+        gameStateManager:cancelSelection()
+        return
+      end
+      -- For other actions, let the button handler perform the action normally
       return -- Button handled the click
+    end
+  end
+  
+  -- If player is currently axing, stop the action when clicking elsewhere
+  if playerActionInProgress then
+    stopPlayerAction()
+    -- Also clear any selection
+    if gameStateManager then
+      gameStateManager:cancelSelection()
     end
   end
   
@@ -510,6 +964,19 @@ function love.load()
     end
   end
 
+  -- Load wood icon
+  do
+    local ok, resultOrError = pcall(function()
+      return dofile("Lua Tileset/wood.lua")
+    end)
+    if ok and type(resultOrError) == "table" then
+      woodIconMap = resultOrError
+      print("Wood icon loaded successfully")
+    else
+      print("Failed to load wood icon:", tostring(resultOrError))
+    end
+  end
+
   -- Build water mask from explicit Water layer: any non-zero tile is water
   if loadSucceeded and sceneMap and sceneMap.layers then
     local function getLayerByName(name)
@@ -582,19 +1049,34 @@ function love.load()
     local baseIdlePath = "Sunnyside_World_Assets/Characters/Human/IDLE/base_idle_strip9.png"
     local hairIdlePath = "Sunnyside_World_Assets/Characters/Human/IDLE/bowlhair_idle_strip9.png"
     local toolsIdlePath = "Sunnyside_World_Assets/Characters/Human/IDLE/tools_idle_strip9.png"
+    -- Axe animation sprites
+    local baseAxePath = "Sunnyside_World_Assets/Characters/Human/AXE/base_axe_strip10.png"
+    local hairAxePath = "Sunnyside_World_Assets/Characters/Human/AXE/bowlhair_axe_strip10.png"
+    local toolsAxePath = "Sunnyside_World_Assets/Characters/Human/AXE/tools_axe_strip10.png"
+    
     local ok1, baseImg = pcall(love.graphics.newImage, basePath)
     local ok2, hairImg = pcall(love.graphics.newImage, hairPath)
     local ok3, toolsImg = pcall(love.graphics.newImage, toolsPath)
     local ok4, baseIdleImg = pcall(love.graphics.newImage, baseIdlePath)
     local ok5, hairIdleImg = pcall(love.graphics.newImage, hairIdlePath)
     local ok6, toolsIdleImg = pcall(love.graphics.newImage, toolsIdlePath)
-    if ok1 and ok2 and ok3 and ok4 and ok5 and ok6 and baseImg and hairImg and toolsImg and baseIdleImg and hairIdleImg and toolsIdleImg then
+    local ok7, baseAxeImg = pcall(love.graphics.newImage, baseAxePath)
+    local ok8, hairAxeImg = pcall(love.graphics.newImage, hairAxePath)
+    local ok9, toolsAxeImg = pcall(love.graphics.newImage, toolsAxePath)
+    
+    if ok1 and ok2 and ok3 and ok4 and ok5 and ok6 and ok7 and ok8 and ok9 and 
+       baseImg and hairImg and toolsImg and baseIdleImg and hairIdleImg and toolsIdleImg and
+       baseAxeImg and hairAxeImg and toolsAxeImg then
       baseImg:setFilter("nearest", "nearest")
       hairImg:setFilter("nearest", "nearest")
       toolsImg:setFilter("nearest", "nearest")
       baseIdleImg:setFilter("nearest", "nearest")
       hairIdleImg:setFilter("nearest", "nearest")
       toolsIdleImg:setFilter("nearest", "nearest")
+      baseAxeImg:setFilter("nearest", "nearest")
+      hairAxeImg:setFilter("nearest", "nearest")
+      toolsAxeImg:setFilter("nearest", "nearest")
+      
       local frameCount = 8
       local frameW = baseImg:getWidth() / frameCount
       local frameH = baseImg:getHeight()
@@ -602,6 +1084,7 @@ function love.load()
       for i = 0, frameCount - 1 do
         quads[i + 1] = love.graphics.newQuad(i * frameW, 0, frameW, frameH, baseImg:getWidth(), baseImg:getHeight())
       end
+      
       -- Idle frames
       local idleCount = 9
       local idleFrameW = baseIdleImg:getWidth() / idleCount
@@ -610,7 +1093,17 @@ function love.load()
       for i = 0, idleCount - 1 do
         idleQuads[i + 1] = love.graphics.newQuad(i * idleFrameW, 0, idleFrameW, idleFrameH, baseIdleImg:getWidth(), baseIdleImg:getHeight())
       end
-      npc = {
+      
+      -- Axe frames
+      local axeCount = 10
+      local axeFrameW = baseAxeImg:getWidth() / axeCount
+      local axeFrameH = baseAxeImg:getHeight()
+      local axeQuads = {}
+      for i = 0, axeCount - 1 do
+        axeQuads[i + 1] = love.graphics.newQuad(i * axeFrameW, 0, axeFrameW, axeFrameH, baseAxeImg:getWidth(), baseAxeImg:getHeight())
+      end
+      
+      player = {
         base = baseImg,
         hair = hairImg,
         tools = toolsImg,
@@ -628,8 +1121,17 @@ function love.load()
         idleFrame = 1,
         idleTime = 0,
         idleDuration = 0.15,
-        x = (sceneMap.width * sceneMap.tilewidth) * 0.5,
-        y = (sceneMap.height * sceneMap.tileheight) * 0.5,
+        -- Axe animation
+        axeBase = baseAxeImg,
+        axeHair = hairAxeImg,
+        axeTools = toolsAxeImg,
+        axeQuads = axeQuads,
+        axeCount = axeCount,
+        axeFrame = 1,
+        axeFrameTime = 0,
+        axeFrameDuration = 0.2, -- Slower than walking for dramatic effect
+        x = 0,
+        y = 0,
         speed = 20, -- pixels/sec in world space
         dirX = 0,
         dirY = 0,
@@ -639,7 +1141,7 @@ function love.load()
         facing = 1 -- 1 right, -1 left
       }
     else
-      print("Failed to load NPC sprites")
+      print("Failed to load player sprites")
     end
   end
 
@@ -657,6 +1159,7 @@ function love.load()
   moveIconImg = loadUI("confirm.png")
   cancelIconImg = loadUI("cancel.png")
   confirmIconImg = loadUI("confirm.png")
+  axeIconImg = loadUI("axe.png")
   labelLeftImg = loadUI("label_left.png")
   labelMidImg = loadUI("label_middle.png")
   labelRightImg = loadUI("label_right.png")
@@ -668,13 +1171,12 @@ function love.load()
   print("  labelMidImg:", labelMidImg and "OK" or "FAILED")
   print("  labelRightImg:", labelRightImg and "OK" or "FAILED")
   print("  handOpenImg:", handOpenImg and "OK" or "FAILED")
+  print("  axeIconImg:", axeIconImg and "OK" or "FAILED")
   
   -- Create actionable objects (houses)
   if houseMap then
     local house1 = ActionableObject.new(houseMap, 10, 6, "House 1", "house")
-    local house2 = ActionableObject.new(houseMap, 15, 8, "House 2", "house")
     gameStateManager:addActionableObject("house1", house1)
-    gameStateManager:addActionableObject("house2", house2)
   end
   
   -- Override the getLabelImages and getIcons methods in GameStateManager
@@ -689,7 +1191,8 @@ function love.load()
   function gameStateManager:getIcons()
     return {
       confirm = confirmIconImg,
-      cancel = cancelIconImg
+      cancel = cancelIconImg,
+      axe = axeIconImg
     }
   end
   
@@ -774,28 +1277,51 @@ function love.draw()
       -- Trees are now drawn with other actionable objects below
 
       -- Draw NPC after the map
-      if npc then
-        local sx = npc.facing
-        local ox = (sx == -1) and npc.width or 0
-        local drawX = mapDrawOffsetX + npc.x + ox
-        local drawY = mapDrawOffsetY + npc.y
-        local moving = (npc.dirX ~= 0 or npc.dirY ~= 0)
+      if player then
+        local sx = playerFacingDirection
+        -- Set anchor point to center of sprite (48, 32)
+        local anchorX = 48
+        local anchorY = 32
+        local drawX = mapDrawOffsetX + player.x - anchorX
+        local drawY = mapDrawOffsetY + player.y - anchorY
+        
+        -- When facing left, we need to adjust the draw position for the flipped sprite
+        if sx == -1 then
+          drawX = drawX + player.width -- Move draw position to account for sprite flip
+        end
+        
         love.graphics.setColor(1, 1, 1, 1)
-        if moving then
-          local q = npc.quads[npc.frame]
-          if q then
-            love.graphics.draw(npc.base, q, drawX, drawY, 0, sx, 1)
-            love.graphics.draw(npc.hair, q, drawX, drawY, 0, sx, 1)
-            love.graphics.draw(npc.tools, q, drawX, drawY, 0, sx, 1)
+        
+        -- Check if player is performing an axe action
+        if playerActionInProgress and playerActionType == "axe" then
+          -- Draw axe animation
+          local axeQ = player.axeQuads[player.axeFrame]
+          if axeQ then
+            love.graphics.draw(player.axeBase, axeQ, drawX, drawY, 0, sx, 1)
+            love.graphics.draw(player.axeHair, axeQ, drawX, drawY, 0, sx, 1)
+            love.graphics.draw(player.axeTools, axeQ, drawX, drawY, 0, sx, 1)
           end
         else
-          local iq = npc.idleQuads[npc.idleFrame]
-          if iq then
-            love.graphics.draw(npc.idleBase, iq, drawX, drawY, 0, sx, 1)
-            love.graphics.draw(npc.idleHair, iq, drawX, drawY, 0, sx, 1)
-            love.graphics.draw(npc.idleTools, iq, drawX, drawY, 0, sx, 1)
+          -- Draw normal walking/idle animation
+          local moving = (player.dirX ~= 0 or player.dirY ~= 0) or playerMoving
+          if moving then
+            local q = player.quads[player.frame]
+            if q then
+              love.graphics.draw(player.base, q, drawX, drawY, 0, sx, 1)
+              love.graphics.draw(player.hair, q, drawX, drawY, 0, sx, 1)
+              love.graphics.draw(player.tools, q, drawX, drawY, 0, sx, 1)
+            end
+          else
+            local iq = player.idleQuads[player.idleFrame]
+            if iq then
+              love.graphics.draw(player.idleBase, iq, drawX, drawY, 0, sx, 1)
+              love.graphics.draw(player.idleHair, iq, drawX, drawY, 0, sx, 1)
+              love.graphics.draw(player.idleTools, iq, drawX, drawY, 0, sx, 1)
+            end
           end
         end
+        
+
       end
 
                               -- Draw non-selected actionable objects first (under the overlay)
@@ -830,6 +1356,9 @@ function love.draw()
 
       love.graphics.pop()
     end
+    
+    -- Draw wood drops (in screen space, not scaled)
+    drawWoodDrops()
 
     -- Draw bottom buttons in screen space (outside of transformed context)
     if gameStateManager then
@@ -873,6 +1402,60 @@ function love.draw()
       end
       
       -- Selection status is now handled by the general object display above
+    end
+    
+    -- Show player status
+    if player then
+      love.graphics.setColor(0.8, 1, 0.8)
+      local tileWidth = sceneMap.tilewidth or 16
+      local tileHeight = sceneMap.tileheight or 16
+      local gridX = math.floor(player.x / tileWidth)
+      local gridY = math.floor(player.y / tileHeight)
+      love.graphics.print(string.format("Player: Pixel(%d, %d) Grid(%d, %d)", math.floor(player.x), math.floor(player.y), gridX, gridY), 24, y)
+      y = y + 20
+      
+      love.graphics.setColor(0.7, 0.7, 1)
+      love.graphics.print(string.format("Map offset: (%.1f, %.1f) Scale: %.2f", mapDrawOffsetX or 0, mapDrawOffsetY or 0, mapScale or 1), 24, y)
+      y = y + 20
+      
+      if playerMoving then
+        love.graphics.setColor(1, 1, 0.8)
+        love.graphics.print("Moving to target...", 24, y)
+        y = y + 20
+      elseif playerActionInProgress then
+        love.graphics.setColor(1, 0.8, 0.8)
+        love.graphics.print(string.format("Performing %s action... (%.1fs)", playerActionType or "unknown", playerActionDuration - playerActionTimer), 24, y)
+        y = y + 20
+      else
+        love.graphics.setColor(0.8, 0.8, 1)
+        love.graphics.print("Idle", 24, y)
+        y = y + 20
+      end
+      
+      love.graphics.setColor(1, 1, 1)
+    end
+    
+    -- Draw wood points UI
+    if woodIconMap and tilesetImage then
+      local iconSize = 24
+      local iconX = love.graphics.getWidth() - 150
+      local iconY = 20
+      
+      -- Draw wood icon using the same tileset
+      local woodGid = woodIconMap.layers[1].data[1] -- GID 754 from wood.lua
+      if woodGid and woodGid > 0 then
+        local localId = woodGid - tilesetFirstGid
+        local quad = tilesetQuads[localId + 1]
+        if quad then
+          love.graphics.setColor(1, 1, 1)
+          love.graphics.draw(tilesetImage, quad, iconX, iconY, 0, iconSize/16, iconSize/16)
+        end
+      end
+      
+      -- Draw wood points text
+      love.graphics.setColor(1, 1, 0.8)
+      love.graphics.print("Wood: " .. (_G.playerWoodPoints or 0), iconX + iconSize + 8, iconY + 4)
+      love.graphics.setColor(1, 1, 1)
     end
   else
     love.graphics.setColor(1, 0.7, 0.7)
