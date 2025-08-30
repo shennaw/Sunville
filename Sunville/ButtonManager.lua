@@ -223,6 +223,8 @@ function ButtonManager:createActionButtons(screenW, screenH, labelImages, icons,
             icon = icons.axe or icons.confirm -- use axe.png icon
         elseif actionName == "pickaxe" then
             icon = icons.pickaxe or icons.confirm
+        elseif actionName == "move_to_grid" then
+            icon = icons.move_to_grid or icons.confirm
         elseif actionName == "cancel" then
             icon = icons.cancel
         end

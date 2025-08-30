@@ -28,7 +28,7 @@ local buttonManager = nil
 
 -- UI sprites for selection
 local cornerTLImg, cornerTRImg, cornerBLImg, cornerBRImg = nil, nil, nil, nil
-local moveIconImg, cancelIconImg, confirmIconImg = nil, nil, nil
+local moveIconImg, cancelIconImg, confirmIconImg, rightArrowIconImg = nil, nil, nil, nil
 
 -- Label images
 local labelLeftImg, labelMidImg, labelRightImg, handOpenImg = nil, nil, nil, nil
@@ -45,9 +45,17 @@ local waterGids = {
 _G.playerWoodPoints = 0
 local woodIconMap = nil
 local woodIconImage = nil
+local rightArrowIconMap = nil
 
 -- Wood drop animation system
 local woodDrops = {} -- Array of {x, y, targetX, targetY, speed, woodGid, quad}
+
+-- Grid selection system
+local selectedGridX, selectedGridY = nil, nil
+local gridSelected = false
+local gridSelectionAnimTime = 0
+local gridSelectionAnimDuration = 1.5
+local gridSelectionAnimOffset = 3
 
 -- Make createWoodDrop globally accessible
 _G.createWoodDrop = nil -- Will be set after function is defined
@@ -418,15 +426,6 @@ local function drawWoodDrops()
     if love.timer.getTime() >= drop.startTime then
       love.graphics.setColor(1, 1, 1, 1)
       love.graphics.draw(tilesetImage, drop.quad, drop.x, drop.y, 0, 1.5, 1.5) -- 1.5x scale
-      
-      -- Debug: Draw bounding box around wood drop
-      love.graphics.setColor(1, 0, 0, 1) -- Red color for debug box
-      love.graphics.rectangle("line", drop.x, drop.y, 16 * 1.5, 16 * 1.5) -- 16px tile scaled by 1.5
-      
-      -- Debug: Show coordinates next to the box
-      love.graphics.setColor(1, 1, 0, 1) -- Yellow text
-      love.graphics.print(string.format("(%.0f,%.0f)", drop.x, drop.y), drop.x + 25, drop.y - 5)
-      love.graphics.setColor(1, 1, 1, 1) -- Reset color
     end
   end
 end
@@ -505,6 +504,16 @@ function love.update(dt)
   
   -- Update wood drops animation
   updateWoodDrops(dt)
+  
+  -- Update grid selection animation
+  if gridSelected then
+    gridSelectionAnimTime = gridSelectionAnimTime + dt
+    if gridSelectionAnimTime > gridSelectionAnimDuration then
+      gridSelectionAnimTime = gridSelectionAnimTime - gridSelectionAnimDuration
+    end
+  else
+    gridSelectionAnimTime = 0
+  end
   
   -- Trees are now handled by gameStateManager, no separate update needed
   
@@ -777,6 +786,26 @@ function love.mousepressed(x, y, button)
         -- Cancel any ongoing action
         stopPlayerAction()
         gameStateManager:cancelSelection()
+        -- Also clear grid selection
+        gridSelected = false
+        selectedGridX = nil
+        selectedGridY = nil
+        gameStateManager:updateButtonsForGridSelection(false)
+        return
+      elseif clickedButton.actionType == "move_to_grid" and gridSelected then
+        -- Move player to selected grid
+        local tileWidth = sceneMap.tilewidth or 16
+        local tileHeight = sceneMap.tileheight or 16
+        local targetGridX, targetGridY = selectedGridX, selectedGridY
+        playerTargetX = targetGridX * tileWidth
+        playerTargetY = targetGridY * tileHeight
+        playerMoving = true
+        print("Player moving to grid (" .. targetGridX .. ", " .. targetGridY .. ")")
+        -- Clear grid selection
+        gridSelected = false
+        selectedGridX = nil
+        selectedGridY = nil
+        gameStateManager:updateButtonsForGridSelection(false)
         return
       end
       -- For other actions, let the button handler perform the action normally
@@ -791,6 +820,11 @@ function love.mousepressed(x, y, button)
     if gameStateManager then
       gameStateManager:cancelSelection()
     end
+    -- Clear grid selection
+    gridSelected = false
+    selectedGridX = nil
+    selectedGridY = nil
+    gameStateManager:updateButtonsForGridSelection(false)
   end
   
   -- Convert to tile coordinates
@@ -798,7 +832,26 @@ function love.mousepressed(x, y, button)
   
   -- Handle object selection/dragging (now includes both houses and trees)
   if gameStateManager then
-    gameStateManager:handleObjectClick(tileX, tileY)
+    -- Check if there's an object at this position first
+    local object, objectId = gameStateManager:getActionableObjectAtPosition(tileX, tileY)
+    
+    if object then
+      -- Handle object click
+      gameStateManager:handleObjectClick(tileX, tileY)
+      -- Clear grid selection when object is clicked
+      gridSelected = false
+      selectedGridX = nil
+      selectedGridY = nil
+      gameStateManager:updateButtonsForGridSelection(false)
+    else
+      -- No object at this position, select the empty grid
+      gameStateManager:cancelSelection() -- Clear any existing object selection
+      selectedGridX = tileX
+      selectedGridY = tileY
+      gridSelected = true
+      gameStateManager:updateButtonsForGridSelection(true)
+      print("Selected empty grid at (" .. tileX .. ", " .. tileY .. ")")
+    end
   end
 end
 
@@ -1000,6 +1053,19 @@ function love.load()
     end
   end
 
+  -- Load right arrow icon
+  do
+    local ok, resultOrError = pcall(function()
+      return dofile("Lua Tileset/right-arrow.lua")
+    end)
+    if ok and type(resultOrError) == "table" then
+      rightArrowIconMap = resultOrError
+      print("Right arrow icon loaded successfully")
+    else
+      print("Failed to load right arrow icon:", tostring(resultOrError))
+    end
+  end
+
   -- Build water mask from explicit Water layer: any non-zero tile is water
   if loadSucceeded and sceneMap and sceneMap.layers then
     local function getLayerByName(name)
@@ -1153,8 +1219,8 @@ function love.load()
         axeFrame = 1,
         axeFrameTime = 0,
         axeFrameDuration = 0.2, -- Slower than walking for dramatic effect
-        x = 80,
-        y = 160,
+        x = 50,
+        y = 120,
         speed = 20, -- pixels/sec in world space
         dirX = 0,
         dirY = 0,
@@ -1183,6 +1249,7 @@ function love.load()
   cancelIconImg = loadUI("cancel.png")
   confirmIconImg = loadUI("confirm.png")
   axeIconImg = loadUI("axe.png")
+  rightArrowIconImg = loadUI("arrow_right.png")
   labelLeftImg = loadUI("label_left.png")
   labelMidImg = loadUI("label_middle.png")
   labelRightImg = loadUI("label_right.png")
@@ -1195,6 +1262,7 @@ function love.load()
   print("  labelRightImg:", labelRightImg and "OK" or "FAILED")
   print("  handOpenImg:", handOpenImg and "OK" or "FAILED")
   print("  axeIconImg:", axeIconImg and "OK" or "FAILED")
+  print("  rightArrowIconImg:", rightArrowIconImg and "OK" or "FAILED")
   
   -- Create actionable objects (houses)
   if houseMap then
@@ -1215,8 +1283,25 @@ function love.load()
     return {
       confirm = confirmIconImg,
       cancel = cancelIconImg,
-      axe = axeIconImg
+      axe = axeIconImg,
+      move_to_grid = rightArrowIconImg
     }
+  end
+  
+  -- Add method to update buttons for grid selection
+  function gameStateManager:updateButtonsForGridSelection(hasGridSelection)
+    if not self.buttonManager then return end
+    
+    if hasGridSelection then
+      local screenW, screenH = love.graphics.getWidth(), love.graphics.getHeight()
+      local actions = {
+        move_to_grid = function() end, -- Handled in main.lua mousepressed
+        cancel = function() end -- Handled in main.lua mousepressed  
+      }
+      self.buttonManager:createActionButtons(screenW, screenH, self:getLabelImages(), self:getIcons(), actions, self.mapScale)
+    else
+      self:updateButtonStates()
+    end
   end
   
   -- Initial button state update
@@ -1374,6 +1459,31 @@ function love.draw()
           end
         end
       end
+      
+      -- Draw grid selection if active
+      if gridSelected and selectedGridX and selectedGridY then
+        local tileWidth = sceneMap.tilewidth or 16
+        local tileHeight = sceneMap.tileheight or 16
+        local gridX = mapDrawOffsetX + selectedGridX * tileWidth
+        local gridY = mapDrawOffsetY + selectedGridY * tileHeight
+        
+        -- Calculate animated offset for breathing effect (same as ActionableObject)
+        local progress = (gridSelectionAnimTime / gridSelectionAnimDuration) * 2 * math.pi
+        local sineValue = math.sin(progress)
+        local animOffset = math.floor((sineValue + 1) * 0.5 * gridSelectionAnimOffset)
+        
+        -- Draw animated selection corners
+        local function drawCorner(img, dx, dy)
+          if img then love.graphics.draw(img, gridX + dx, gridY + dy) end
+        end
+        love.graphics.setColor(1, 1, 1, 1)
+        
+        -- Apply outward animation to each corner
+        drawCorner(cornerTLImg, -2 - animOffset, -2 - animOffset)
+        if cornerTRImg then drawCorner(cornerTRImg, tileWidth - cornerTRImg:getWidth() + 2 + animOffset, -2 - animOffset) end
+        if cornerBLImg then drawCorner(cornerBLImg, -2 - animOffset, tileHeight - cornerBLImg:getHeight() + 2 + animOffset) end
+        if cornerBRImg then drawCorner(cornerBRImg, tileWidth - cornerBRImg:getWidth() + 2 + animOffset, tileHeight - cornerBRImg:getHeight() + 2 + animOffset) end
+      end
 
       love.graphics.pop()
     end
@@ -1511,6 +1621,12 @@ function love.drawActionableObject(object, tilesetImage, tilesetQuads, tilesetFi
                 placeTileX = placeTileX + object.dragOffsetX
                 placeTileY = placeTileY + object.dragOffsetY
               end
+              
+              -- Add shake effect for trees
+              local shakeX, shakeY = 0, 0
+              if object.objectType == "tree" and object.getShakeOffset then
+                shakeX, shakeY = object:getShakeOffset()
+              end
               -- While dragging, draw semi-transparent; tint red if invalid
               if object.isDragging then
                 if not object.previewPlacementValid then
@@ -1524,8 +1640,8 @@ function love.drawActionableObject(object, tilesetImage, tilesetQuads, tilesetFi
               love.graphics.draw(
                 tilesetImage,
                 quad,
-                mapDrawOffsetX + placeTileX * tileWidth + (layer.offsetx or 0),
-                mapDrawOffsetY + placeTileY * tileHeight + (layer.offsety or 0)
+                mapDrawOffsetX + placeTileX * tileWidth + (layer.offsetx or 0) + shakeX,
+                mapDrawOffsetY + placeTileY * tileHeight + (layer.offsety or 0) + shakeY
               )
               love.graphics.setColor(1, 1, 1, 1)
             end

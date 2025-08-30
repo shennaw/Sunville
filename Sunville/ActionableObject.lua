@@ -60,7 +60,12 @@ function ActionableObject.new(mapData, tileX, tileY, name, objectType)
         
         -- Health system for trees
         maxHealth = (objectType == OBJECT_TYPE_TREE) and 100 or nil,
-        currentHealth = (objectType == OBJECT_TYPE_TREE) and 100 or nil
+        currentHealth = (objectType == OBJECT_TYPE_TREE) and 100 or nil,
+        
+        -- Shake effect for trees
+        shakeTimer = 0,
+        shakeDuration = 0.3,
+        shakeIntensity = 1
     }
     
     -- Debug: Check tree health initialization
@@ -181,8 +186,11 @@ function ActionableObject:performAxeAction(callback)
     
     -- Damage the tree
     if self.currentHealth then
-        self.currentHealth = self.currentHealth - 50
+        self.currentHealth = self.currentHealth - 30
         print("Chopping " .. self.name .. "... Health: " .. self.currentHealth .. "/" .. self.maxHealth)
+        
+        -- Trigger shake effect
+        self.shakeTimer = self.shakeDuration
         
         if self.currentHealth <= 0 then
             -- Tree is destroyed, give wood points
@@ -264,6 +272,14 @@ function ActionableObject:updateSelection(dt)
     else
         self.selectionAnimTime = 0
     end
+    
+    -- Update shake effect for trees
+    if self.shakeTimer > 0 then
+        self.shakeTimer = self.shakeTimer - dt
+        if self.shakeTimer < 0 then
+            self.shakeTimer = 0
+        end
+    end
 end
 
 function ActionableObject:getSelectionCornerOffset()
@@ -279,6 +295,20 @@ function ActionableObject:getSelectionCornerOffset()
     local offset = (sineValue + 1) * 0.5 * self.selectionAnimOffset
     
     return math.floor(offset) -- Return integer offset to avoid sub-pixel positioning
+end
+
+function ActionableObject:getShakeOffset()
+    if self.shakeTimer <= 0 then
+        return 0, 0
+    end
+    
+    -- Use shake timer to create consistent shake for all tiles of this object
+    -- This ensures the entire tree shakes as one unit
+    local shakePhase = (self.shakeDuration - self.shakeTimer) * 20 -- Fast oscillation
+    local shakeX = math.sin(shakePhase) * self.shakeIntensity
+    local shakeY = math.cos(shakePhase * 1.3) * self.shakeIntensity * 0.5 -- Less vertical shake
+    
+    return math.floor(shakeX), math.floor(shakeY)
 end
 
 function ActionableObject:updatePosition(tileX, tileY, sceneWidth, sceneHeight)
