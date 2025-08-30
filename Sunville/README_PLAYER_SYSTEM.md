@@ -79,3 +79,4 @@ If the player doesn't move to trees:
 - Animation frames are managed to prevent memory leaks
 - Debug output is limited to avoid console spam
 - Movement calculations use efficient math operations
+

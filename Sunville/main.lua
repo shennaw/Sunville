@@ -332,27 +332,41 @@ local function createWoodDrop(treeTileX, treeTileY, treeWidth, treeHeight, woodA
   local quad = tilesetQuads[localId + 1]
   if not quad then return end
   
-  -- Convert tree grid position to world position
+  -- Use tree's center position as spawn coordinate
   local tileWidth = sceneMap.tilewidth or 16
   local tileHeight = sceneMap.tileheight or 16
-  local treeWorldX = treeTileX * tileWidth + (treeWidth * tileWidth / 2) -- Center of tree
-  local treeWorldY = treeTileY * tileHeight + (treeHeight * tileHeight / 2)
+  local treeCenterWorldX = (treeTileX + treeWidth / 2) * tileWidth
+  local treeCenterWorldY = (treeTileY + treeHeight / 2) * tileHeight
+  
+  -- Transform world coordinates to screen coordinates
+  local treeCenterX = (mapDrawOffsetX + treeCenterWorldX) * mapScale
+  local treeCenterY = (mapDrawOffsetY + treeCenterWorldY) * mapScale
+  
+  -- Debug: Print spawn coordinates
+  print("DEBUG: Tree world position (" .. treeCenterWorldX .. ", " .. treeCenterWorldY .. ")")
+  print("DEBUG: Tree screen position (" .. treeCenterX .. ", " .. treeCenterY .. ")")
   
   -- Calculate target position (wood icon location)
   local iconX = love.graphics.getWidth() - 150 + 12 -- Center of wood icon
   local iconY = 20 + 12
   
+  print("DEBUG: Wood icon position (" .. iconX .. ", " .. iconY .. ")")
+  
   -- Create multiple wood drops based on amount
   local numDrops = math.min(3, math.max(1, math.floor(woodAmount / 30))) -- 1-3 drops
   
   for i = 1, numDrops do
-    -- Random offset around tree center
-    local offsetX = love.math.random(-tileWidth, tileWidth)
-    local offsetY = love.math.random(-tileHeight, tileHeight)
+    -- Use tree center position as spawn coordinate with small random offset
+    local offsetX = love.math.random(-20, 20)
+    local offsetY = love.math.random(-20, 20)
+    local spawnX = treeCenterX + offsetX
+    local spawnY = treeCenterY + offsetY
+    
+    print("DEBUG: Wood drop " .. i .. " spawning at (" .. spawnX .. ", " .. spawnY .. ")")
     
     local drop = {
-      x = treeWorldX + offsetX,
-      y = treeWorldY + offsetY,
+      x = spawnX,
+      y = spawnY,
       targetX = iconX,
       targetY = iconY,
       speed = 200, -- pixels per second
@@ -404,6 +418,15 @@ local function drawWoodDrops()
     if love.timer.getTime() >= drop.startTime then
       love.graphics.setColor(1, 1, 1, 1)
       love.graphics.draw(tilesetImage, drop.quad, drop.x, drop.y, 0, 1.5, 1.5) -- 1.5x scale
+      
+      -- Debug: Draw bounding box around wood drop
+      love.graphics.setColor(1, 0, 0, 1) -- Red color for debug box
+      love.graphics.rectangle("line", drop.x, drop.y, 16 * 1.5, 16 * 1.5) -- 16px tile scaled by 1.5
+      
+      -- Debug: Show coordinates next to the box
+      love.graphics.setColor(1, 1, 0, 1) -- Yellow text
+      love.graphics.print(string.format("(%.0f,%.0f)", drop.x, drop.y), drop.x + 25, drop.y - 5)
+      love.graphics.setColor(1, 1, 1, 1) -- Reset color
     end
   end
 end
@@ -1130,8 +1153,8 @@ function love.load()
         axeFrame = 1,
         axeFrameTime = 0,
         axeFrameDuration = 0.2, -- Slower than walking for dramatic effect
-        x = 0,
-        y = 0,
+        x = 80,
+        y = 160,
         speed = 20, -- pixels/sec in world space
         dirX = 0,
         dirY = 0,
@@ -1276,7 +1299,37 @@ function love.draw()
 
       -- Trees are now drawn with other actionable objects below
 
-      -- Draw NPC after the map
+                              -- Draw non-selected actionable objects first (under the overlay)
+                        if gameStateManager then
+                          for id, object in pairs(gameStateManager.actionableObjects) do
+                            -- Only draw objects that are NOT currently being dragged
+                            if not object.isDragging then
+                              love.drawActionableObject(object, tilesetImage, tilesetQuads, tilesetFirstGid, tileWidth, tileHeight, sceneMap, mapDrawOffsetX, mapDrawOffsetY, cornerTLImg, cornerTRImg, cornerBLImg, cornerBRImg)
+                            end
+                          end
+                        end
+
+                        -- While dragging: darken the map and draw a grid overlay above it
+                        if gameStateManager and gameStateManager:isAnyObjectDragging() then
+                          local mapPixelW = sceneMap.width * tileWidth
+                          local mapPixelH = sceneMap.height * tileHeight
+                          -- Darken map underlay
+                          love.graphics.setColor(0, 0, 0, 0.25)
+                          love.graphics.rectangle("fill", mapDrawOffsetX, mapDrawOffsetY, mapPixelW, mapPixelH)
+                          love.graphics.setColor(1, 1, 1, 1)
+                        end
+
+                        -- Draw only the selected/dragging object above the dark overlay
+                        if gameStateManager then
+                          for id, object in pairs(gameStateManager.actionableObjects) do
+                            -- Only draw objects that ARE currently being dragged
+                            if object.isDragging then
+                              love.drawActionableObject(object, tilesetImage, tilesetQuads, tilesetFirstGid, tileWidth, tileHeight, sceneMap, mapDrawOffsetX, mapDrawOffsetY, cornerTLImg, cornerTRImg, cornerBLImg, cornerBRImg)
+                            end
+                          end
+                        end
+
+      -- Draw player on top of everything else (most front)
       if player then
         local sx = playerFacingDirection
         -- Set anchor point to center of sprite (48, 32)
@@ -1320,39 +1373,7 @@ function love.draw()
             end
           end
         end
-        
-
       end
-
-                              -- Draw non-selected actionable objects first (under the overlay)
-                        if gameStateManager then
-                          for id, object in pairs(gameStateManager.actionableObjects) do
-                            -- Only draw objects that are NOT currently being dragged
-                            if not object.isDragging then
-                              love.drawActionableObject(object, tilesetImage, tilesetQuads, tilesetFirstGid, tileWidth, tileHeight, sceneMap, mapDrawOffsetX, mapDrawOffsetY, cornerTLImg, cornerTRImg, cornerBLImg, cornerBRImg)
-                            end
-                          end
-                        end
-
-                        -- While dragging: darken the map and draw a grid overlay above it
-                        if gameStateManager and gameStateManager:isAnyObjectDragging() then
-                          local mapPixelW = sceneMap.width * tileWidth
-                          local mapPixelH = sceneMap.height * tileHeight
-                          -- Darken map underlay
-                          love.graphics.setColor(0, 0, 0, 0.25)
-                          love.graphics.rectangle("fill", mapDrawOffsetX, mapDrawOffsetY, mapPixelW, mapPixelH)
-                          love.graphics.setColor(1, 1, 1, 1)
-                        end
-
-                        -- Draw only the selected/dragging object above the dark overlay
-                        if gameStateManager then
-                          for id, object in pairs(gameStateManager.actionableObjects) do
-                            -- Only draw objects that ARE currently being dragged
-                            if object.isDragging then
-                              love.drawActionableObject(object, tilesetImage, tilesetQuads, tilesetFirstGid, tileWidth, tileHeight, sceneMap, mapDrawOffsetX, mapDrawOffsetY, cornerTLImg, cornerTRImg, cornerBLImg, cornerBRImg)
-                            end
-                          end
-                        end
 
       love.graphics.pop()
     end
