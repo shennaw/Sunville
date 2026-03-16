@@ -7,12 +7,13 @@
     "expandedProjectPaths": [
         "."
     ],
+    "file.lastUsedOpenFilter": "All Files (*)",
     "fileStates": {
         "SCENE_MAIN_FARM.tmx": {
             "scale": 1.5,
             "selectedLayer": 1,
             "viewCenter": {
-                "x": 214.33333333333334,
+                "x": 240,
                 "y": 159.66666666666663
             }
         },
@@ -20,8 +21,8 @@
             "scale": 1.5694791666666665,
             "selectedLayer": 0,
             "viewCenter": {
-                "x": 347.886108714409,
-                "y": 261.23315855843896
+                "x": 316.66556049644925,
+                "y": 139.21815889029006
             }
         },
         "big-tree.tmx": {
@@ -39,8 +40,8 @@
             "scale": 2.2404166666666665,
             "selectedLayer": 0,
             "viewCenter": {
-                "x": 48.20531895108797,
-                "y": 31.913706527803612
+                "x": 48.205318951087975,
+                "y": 31.913706527803626
             }
         },
         "spr_tileset_sunnysideworld_forest_32px.tsx": {
@@ -65,11 +66,12 @@
     ],
     "project": "sunville.tiled-project",
     "recentFiles": [
-        "forest.tsx",
-        "spr_tileset_sunnysideworld_forest_32px.tsx",
         "small-house.tmx",
         "sunville.tsx",
-        "SCENE_MAIN_FARM.tmx"
+        "SCENE_MAIN_FARM.tmx",
+        "VERTICAL_MAIN_FARM.tmx",
+        "forest.tsx",
+        "spr_tileset_sunnysideworld_forest_32px.tsx"
     ],
     "tileset.lastUsedFormat": "tsx",
     "tileset.tileSize": {

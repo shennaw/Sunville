@@ -170,10 +170,11 @@ function DraggableObject:validatePlacement(sceneWidth, sceneHeight, gameStateMan
     local width = self:getWidth()
     local height = self:getHeight()
     
-    -- Check bounds
-    if finalX < 0 or finalY < 0 or finalX + width > sceneWidth or finalY + height > sceneHeight then
+    -- Check bounds (including outer grid restriction)
+    -- Outer grid (0 and width-1, 0 and height-1) is inaccessible
+    if finalX < 1 or finalY < 1 or finalX + width > sceneWidth - 1 or finalY + height > sceneHeight - 1 then
         self.previewPlacementValid = false
-        self.invalidPlacementReason = "Cannot place outside map bounds"
+        self.invalidPlacementReason = "Cannot place on border"
         return
     end
     

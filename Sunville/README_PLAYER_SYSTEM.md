@@ -80,3 +80,4 @@ If the player doesn't move to trees:
 - Debug output is limited to avoid console spam
 - Movement calculations use efficient math operations
 
+

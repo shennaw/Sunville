@@ -70,6 +70,8 @@ local playerActionInProgress = false -- Whether an action is currently being per
 local playerActionTimer = 0 -- Timer for action duration
 local playerActionDuration = 2.0 -- How long axe action takes
 local playerFacingDirection = 1 -- 1 for right, -1 for left
+local playerStopTimer = 0 -- Timer to prevent auto movement after reaching destination
+local playerStopDuration = 5.0 -- How long to stop auto movement after reaching target
 
 -- Trees
 local treeMap = nil
@@ -124,12 +126,21 @@ local function checkPlayerCollisionWithObjects(playerX, playerY, playerWidth, pl
   -- Convert player pixel position to tile coordinates for collision checking
   local tileWidth = sceneMap.tilewidth or 16
   local tileHeight = sceneMap.tileheight or 16
+  local mapWidth = sceneMap.width
+  local mapHeight = sceneMap.height
   
   -- Calculate the tile area the player would occupy
   local playerLeft = math.floor(playerX / tileWidth)
   local playerTop = math.floor(playerY / tileHeight)
   local playerRight = math.floor((playerX + playerWidth - 1) / tileWidth)
   local playerBottom = math.floor((playerY + playerHeight - 1) / tileHeight)
+  
+  -- Check map boundaries (outer grid is inaccessible)
+  -- The outer ring of tiles (0 and width-1 on X, 0 and height-1 on Y) acts as a wall
+  if playerLeft < 1 or playerRight >= mapWidth - 1 or 
+     playerTop < 1 or playerBottom >= mapHeight - 1 then
+    return true, nil -- Collision with border
+  end
   
   -- Check collision with all actionable objects
   for id, object in pairs(gameStateManager.actionableObjects) do
@@ -163,6 +174,9 @@ local function movePlayerToTarget(dt)
     playerMoving = false
     playerTargetX = nil
     playerTargetY = nil
+    
+    -- Start stop timer to prevent auto movement
+    playerStopTimer = playerStopDuration
     
     -- Start performing the action
     if playerActionTarget and playerActionType then
@@ -479,6 +493,18 @@ local function startPlayerAction(object, actionType)
     targetPixelY = targetGridY * tileHeight
   end
   
+  -- Clamp target to valid grid (inner area) to avoid moving to border
+  if sceneMap then
+    local mapWidth = sceneMap.width
+    local mapHeight = sceneMap.height
+    targetGridX = math.max(1, math.min(targetGridX, mapWidth - 2))
+    targetGridY = math.max(1, math.min(targetGridY, mapHeight - 2))
+    
+    -- Recalculate pixel target based on clamped grid
+    targetPixelX = targetGridX * tileWidth
+    targetPixelY = targetGridY * tileHeight
+  end
+  
   -- Set target position
   playerTargetX = targetPixelX
   playerTargetY = targetPixelY
@@ -515,6 +541,14 @@ function love.update(dt)
     gridSelectionAnimTime = 0
   end
   
+  -- Update player stop timer
+  if playerStopTimer > 0 then
+    playerStopTimer = playerStopTimer - dt
+    if playerStopTimer < 0 then
+      playerStopTimer = 0
+    end
+  end
+  
   -- Trees are now handled by gameStateManager, no separate update needed
   
   -- Pause game logic when in grid mode (dragging mode)
@@ -527,8 +561,8 @@ function love.update(dt)
     movePlayerToTarget(dt)
     updatePlayerAction(dt)
 
-    -- Only allow random movement when not performing actions
-    if not playerActionInProgress and not playerMoving then
+    -- Only allow random movement when not performing actions and stop timer expired
+    if not playerActionInProgress and not playerMoving and playerStopTimer <= 0 then
       -- Randomly change direction every 1-3 seconds
       player.changeDirCooldown = player.changeDirCooldown - dt
       if player.changeDirCooldown <= 0 then
@@ -634,7 +668,13 @@ function love.update(dt)
        end
 
        local moving = (player.dirX ~= 0 or player.dirY ~= 0)
-       if player.dirX > 0 then player.facing = 1 elseif player.dirX < 0 then player.facing = -1 end
+       if player.dirX > 0 then 
+         player.facing = 1 
+         playerFacingDirection = 1
+       elseif player.dirX < 0 then 
+         player.facing = -1 
+         playerFacingDirection = -1
+       end
        if moving then
          player.frameTime = player.frameTime + dt
          while player.frameTime >= player.frameDuration do
@@ -845,6 +885,19 @@ function love.mousepressed(x, y, button)
       gameStateManager:updateButtonsForGridSelection(false)
     else
       -- No object at this position, select the empty grid
+      
+      -- Check if clicking on border (inaccessible)
+      if sceneMap then
+        local mapWidth = sceneMap.width
+        local mapHeight = sceneMap.height
+        if tileX < 1 or tileX >= mapWidth - 1 or tileY < 1 or tileY >= mapHeight - 1 then
+          -- Clicked on border, ignore
+          if gameStateManager then gameStateManager:cancelSelection() end
+          gridSelected = false
+          return
+        end
+      end
+      
       gameStateManager:cancelSelection() -- Clear any existing object selection
       selectedGridX = tileX
       selectedGridY = tileY
