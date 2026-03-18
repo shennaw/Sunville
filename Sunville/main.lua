@@ -5,6 +5,7 @@
 local ActionableObject = require("ActionableObject")
 local ButtonManager = require("ButtonManager")
 local GameStateManager = require("GameStateManager")
+local InventoryManager = require("InventoryManager")
 
 local loadSucceeded = false
 local sceneMap = nil
@@ -51,8 +52,6 @@ local rightArrowIconMap = nil
 local woodDrops = {} -- Array of {x, y, targetX, targetY, speed, woodGid, quad}
 
 -- Grid selection system
-local selectedGridX, selectedGridY = nil, nil
-local gridSelected = false
 local gridSelectionAnimTime = 0
 local gridSelectionAnimDuration = 1.5
 local gridSelectionAnimOffset = 3
@@ -180,20 +179,25 @@ local function movePlayerToTarget(dt)
     
     -- Start performing the action
     if playerActionTarget and playerActionType then
-      -- Set facing direction for axing based on player position relative to tree
+      -- Set facing direction based on player position relative to target tile
       if playerActionType == "axe" then
         local tileWidth = sceneMap.tilewidth or 16
         local playerGridX = math.floor(player.x / tileWidth)
-        local treeLeftEdge = playerActionTarget.tileX
-        local treeRightEdge = playerActionTarget.tileX + playerActionTarget:getWidth() - 1
         local treeCenterX = playerActionTarget.tileX + math.floor(playerActionTarget:getWidth() / 2)
-        
-        -- If player is on the left side of tree center, face right
-        -- If player is on the right side of tree center, face left
         if playerGridX < treeCenterX then
           playerFacingDirection = 1 -- Face right
         else
           playerFacingDirection = -1 -- Face left
+        end
+      elseif playerActionType == "dig" or playerActionType == "plant" then
+        local tileWidth = sceneMap.tilewidth or 16
+        local playerGridX = math.floor(player.x / tileWidth)
+        local targetTileX = playerActionTarget.tileX
+        -- If player is at or left of the tile's column, face right; otherwise face left
+        if playerGridX <= targetTileX then
+          playerFacingDirection = 1 -- Face right toward the tile
+        else
+          playerFacingDirection = -1 -- Face left toward the tile
         end
       end
       
@@ -260,6 +264,33 @@ local function updatePlayerAction(dt)
     end
   end
   
+  -- Update dig animation frames
+  if playerActionType == "dig" and player then
+    player.digFrameTime = player.digFrameTime + dt
+    while player.digFrameTime >= player.digFrameDuration do
+      player.digFrameTime = player.digFrameTime - player.digFrameDuration
+      player.digFrame = player.digFrame % player.digCount + 1
+    end
+  end
+
+  -- Update plant animation frames
+  if playerActionType == "plant" and player then
+    player.plantFrameTime = player.plantFrameTime + dt
+    while player.plantFrameTime >= player.plantFrameDuration do
+      player.plantFrameTime = player.plantFrameTime - player.plantFrameDuration
+      player.plantFrame = player.plantFrame % player.plantCount + 1
+    end
+  end
+  
+  -- Update watering animation frames
+  if playerActionType == "water" and player then
+    player.waterFrameTime = player.waterFrameTime + dt
+    while player.waterFrameTime >= player.waterFrameDuration do
+      player.waterFrameTime = player.waterFrameTime - player.waterFrameDuration
+      player.waterFrame = player.waterFrame % player.waterCount + 1
+    end
+  end
+  
   if playerActionTimer >= playerActionDuration then
     -- Single axe swing completed
     if playerActionTarget and playerActionType == "axe" then
@@ -289,6 +320,80 @@ local function updatePlayerAction(dt)
         end
         print("Axing completed!")
       end
+    elseif playerActionType == "dig" then
+      -- Dig action completed - mark tile as dug
+      if playerActionTarget then
+        local tileX = playerActionTarget.tileX
+        local tileY = playerActionTarget.tileY
+        gameStateManager:addDugTile(tileX, tileY)
+        print("Dug tile at (" .. tileX .. ", " .. tileY .. ")")
+      end
+      
+      playerActionInProgress = false
+      playerActionTimer = 0
+      playerActionTarget = nil
+      playerActionType = nil
+      
+      -- Reset dig animation
+      if player then
+        player.digFrame = 1
+        player.digFrameTime = 0
+      end
+      print("Digging completed!")
+    elseif playerActionType == "plant" then
+      -- Plant action completed
+      if playerActionTarget and playerActionTarget.cropType then
+        gameStateManager:plant(playerActionTarget.cropType, playerActionTarget.tileX, playerActionTarget.tileY)
+      end
+      playerActionInProgress = false
+      playerActionTimer = 0
+      playerActionTarget = nil
+      playerActionType = nil
+
+      -- Reset plant animation
+      if player then
+        player.plantFrame = 1
+        player.plantFrameTime = 0
+      end
+      print("Planting completed!")
+    elseif playerActionType == "water" then
+      -- Water action completed
+      if playerActionTarget then
+        local crop = gameStateManager.crops[playerActionTarget.tileY] and gameStateManager.crops[playerActionTarget.tileY][playerActionTarget.tileX]
+        if crop then
+          crop:water()
+          print("Watered crop at (" .. playerActionTarget.tileX .. ", " .. playerActionTarget.tileY .. ")")
+        end
+      end
+      playerActionInProgress = false
+      playerActionTimer = 0
+      playerActionTarget = nil
+      playerActionType = nil
+      
+      -- Reset watering animation
+      if player then
+        player.waterFrame = 1
+        player.waterFrameTime = 0
+      end
+      print("Watering completed!")
+    elseif playerActionType == "harvest" then
+      -- Harvest action completed
+      if playerActionTarget then
+        local crop = gameStateManager.crops[playerActionTarget.tileY] and gameStateManager.crops[playerActionTarget.tileY][playerActionTarget.tileX]
+        if crop then
+          local itemType = crop:harvest()
+          if _G.inventory then
+            _G.inventory:addItem(itemType, 1)
+          end
+          gameStateManager:removeDugTile(playerActionTarget.tileX, playerActionTarget.tileY)
+          print("Harvested " .. itemType .. " at (" .. playerActionTarget.tileX .. ", " .. playerActionTarget.tileY .. ")")
+        end
+      end
+      playerActionInProgress = false
+      playerActionTimer = 0
+      playerActionTarget = nil
+      playerActionType = nil
+      print("Harvesting completed!")
     else
       -- Non-axe actions work as before
       playerActionInProgress = false
@@ -525,6 +630,7 @@ end
 function love.update(dt)
   -- Update game state
   if gameStateManager then
+    gameStateManager:update(dt)
     gameStateManager:updateDrag(dt)
   end
   
@@ -532,7 +638,7 @@ function love.update(dt)
   updateWoodDrops(dt)
   
   -- Update grid selection animation
-  if gridSelected then
+  if gameStateManager and gameStateManager.selectedGridX then
     gridSelectionAnimTime = gridSelectionAnimTime + dt
     if gridSelectionAnimTime > gridSelectionAnimDuration then
       gridSelectionAnimTime = gridSelectionAnimTime - gridSelectionAnimDuration
@@ -666,33 +772,38 @@ function love.update(dt)
            end
          end
        end
-
-       local moving = (player.dirX ~= 0 or player.dirY ~= 0)
-       if player.dirX > 0 then 
-         player.facing = 1 
-         playerFacingDirection = 1
-       elseif player.dirX < 0 then 
-         player.facing = -1 
-         playerFacingDirection = -1
-       end
-       if moving then
-         player.frameTime = player.frameTime + dt
-         while player.frameTime >= player.frameDuration do
-           player.frameTime = player.frameTime - player.frameDuration
-           player.frame = player.frame % player.frameCount + 1
-         end
-         player.idleTime = 0
-         player.idleFrame = 1
-       else
-         player.frame = 1
-         player.frameTime = 0
-         player.idleTime = player.idleTime + dt
-         while player.idleTime >= player.idleDuration do
-           player.idleTime = player.idleTime - player.idleDuration
-           player.idleFrame = player.idleFrame % player.idleCount + 1
-         end
-       end
     end
+
+   -- Update player animation (Walking or Idle)
+   -- Only if not performing a specific action (axe, dig, etc.) which handle their own animation
+   if not playerActionInProgress and not playerMoving then
+     local moving = (player.dirX ~= 0 or player.dirY ~= 0)
+     if player.dirX > 0 then 
+       player.facing = 1 
+       playerFacingDirection = 1
+     elseif player.dirX < 0 then 
+       player.facing = -1 
+       playerFacingDirection = -1
+     end
+     
+     if moving then
+       player.frameTime = player.frameTime + dt
+       while player.frameTime >= player.frameDuration do
+         player.frameTime = player.frameTime - player.frameDuration
+         player.frame = player.frame % player.frameCount + 1
+       end
+       player.idleTime = 0
+       player.idleFrame = 1
+     else
+       player.frame = 1
+       player.frameTime = 0
+       player.idleTime = player.idleTime + dt
+       while player.idleTime >= player.idleDuration do
+         player.idleTime = player.idleTime - player.idleDuration
+         player.idleFrame = player.idleFrame % player.idleCount + 1
+       end
+     end
+   end
   end
 end
 
@@ -822,30 +933,150 @@ function love.mousepressed(x, y, button)
           gameStateManager:cancelSelection()
           return
         end
+      elseif clickedButton.actionType == "dig" and gameStateManager.selectedGridX then
+        -- Create a lightweight dig target to pass to startPlayerAction
+        local digTarget = {
+          tileX = gameStateManager.selectedGridX,
+          tileY = gameStateManager.selectedGridY,
+          name = "Tile (" .. gameStateManager.selectedGridX .. ", " .. gameStateManager.selectedGridY .. ")",
+          objectType = "dig_tile",
+          getWidth = function() return 1 end,
+          getHeight = function() return 1 end,
+        }
+        
+        local tileWidth = sceneMap.tilewidth or 16
+        local tileHeight = sceneMap.tileheight or 16
+        local playerGridX = math.floor(player.x / tileWidth)
+        
+        -- Position player 3px past the tile edge so they lean into the dig
+        if playerGridX < gameStateManager.selectedGridX then
+          playerTargetX = gameStateManager.selectedGridX * tileWidth + 3
+        else
+          playerTargetX = (gameStateManager.selectedGridX + 1) * tileWidth - 3
+        end
+        playerTargetY = gameStateManager.selectedGridY * tileHeight
+
+        playerActionTarget = digTarget
+        playerActionType = "dig"
+        playerMoving = true
+        print("Player moving to dig tile at (" .. gameStateManager.selectedGridX .. ", " .. gameStateManager.selectedGridY .. ")")
+        -- Clear grid selection
+        gameStateManager:setSelectedGrid(nil, nil)
+        return
+      elseif clickedButton.actionType == "plant" and gameStateManager.selectedGridX then
+        -- Show seed picker
+        local screenW, screenH = love.graphics.getWidth(), love.graphics.getHeight()
+        gameStateManager.buttonManager:createSeedPickerButtons(
+          screenW, screenH, 
+          gameStateManager:getLabelImages(), 
+          gameStateManager.cropIcons, 
+          _G.inventory.seeds, 
+          function(seedType)
+            if seedType == "cancel_picker" then
+              gameStateManager:updateButtonStates()
+            else
+              -- Start planting action
+              local plantTarget = {
+                tileX = gameStateManager.selectedGridX,
+                tileY = gameStateManager.selectedGridY,
+                name = "Tile (" .. gameStateManager.selectedGridX .. ", " .. gameStateManager.selectedGridY .. ")",
+                objectType = "plant_tile",
+                cropType = seedType,
+                getWidth = function() return 1 end,
+                getHeight = function() return 1 end,
+              }
+              local tileWidth = sceneMap.tilewidth or 16
+              local tileHeight = sceneMap.tileheight or 16
+              local playerGridX = math.floor(player.x / tileWidth)
+              
+              -- Position player aligned with the tile row (consistent with axe positioning)
+              if playerGridX < gameStateManager.selectedGridX then
+                playerTargetX = gameStateManager.selectedGridX * tileWidth
+              else
+                playerTargetX = (gameStateManager.selectedGridX + 1) * tileWidth
+              end
+              playerTargetY = gameStateManager.selectedGridY * tileHeight
+
+              playerActionTarget = plantTarget
+              playerActionType = "plant"
+              playerMoving = true
+              -- Clear grid selection after starting movement
+              gameStateManager:setSelectedGrid(nil, nil)
+            end
+          end,
+          gameStateManager.mapScale
+        )
+        return
+      elseif clickedButton.actionType == "water" and gameStateManager.selectedGridX then
+        -- Start watering action
+        local tileWidth = sceneMap.tilewidth or 16
+        local tileHeight = sceneMap.tileheight or 16
+        local playerGridX = math.floor(player.x / tileWidth)
+        
+        -- Position player aligned with the tile row (consistent with axe positioning)
+        if playerGridX < gameStateManager.selectedGridX then
+          playerTargetX = gameStateManager.selectedGridX * tileWidth
+        else
+          playerTargetX = (gameStateManager.selectedGridX + 1) * tileWidth
+        end
+        playerTargetY = gameStateManager.selectedGridY * tileHeight
+        
+        playerActionTarget = {
+          tileX = gameStateManager.selectedGridX,
+          tileY = gameStateManager.selectedGridY,
+          name = "Crop (" .. gameStateManager.selectedGridX .. ", " .. gameStateManager.selectedGridY .. ")",
+          objectType = "crop_tile",
+          getWidth = function() return 1 end,
+          getHeight = function() return 1 end,
+        }
+        playerActionType = "water"
+        playerMoving = true
+        gameStateManager:setSelectedGrid(nil, nil)
+        return
+      elseif clickedButton.actionType == "harvest" and gameStateManager.selectedGridX then
+        -- Start harvesting action
+        local tileWidth = sceneMap.tilewidth or 16
+        local tileHeight = sceneMap.tileheight or 16
+        local playerGridX = math.floor(player.x / tileWidth)
+        
+        -- Position player aligned with the tile row (consistent with axe positioning)
+        if playerGridX < gameStateManager.selectedGridX then
+          playerTargetX = gameStateManager.selectedGridX * tileWidth
+        else
+          playerTargetX = (gameStateManager.selectedGridX + 1) * tileWidth
+        end
+        playerTargetY = gameStateManager.selectedGridY * tileHeight
+        
+        playerActionTarget = {
+          tileX = gameStateManager.selectedGridX,
+          tileY = gameStateManager.selectedGridY,
+          name = "Crop (" .. gameStateManager.selectedGridX .. ", " .. gameStateManager.selectedGridY .. ")",
+          objectType = "crop_tile",
+          getWidth = function() return 1 end,
+          getHeight = function() return 1 end,
+        }
+        playerActionType = "harvest"
+        playerMoving = true
+        gameStateManager:setSelectedGrid(nil, nil)
+        return
       elseif clickedButton.actionType == "cancel" then
         -- Cancel any ongoing action
         stopPlayerAction()
         gameStateManager:cancelSelection()
         -- Also clear grid selection
-        gridSelected = false
-        selectedGridX = nil
-        selectedGridY = nil
-        gameStateManager:updateButtonsForGridSelection(false)
+        gameStateManager:setSelectedGrid(nil, nil)
         return
-      elseif clickedButton.actionType == "move_to_grid" and gridSelected then
+      elseif clickedButton.actionType == "move_to_grid" and gameStateManager.selectedGridX then
         -- Move player to selected grid
         local tileWidth = sceneMap.tilewidth or 16
         local tileHeight = sceneMap.tileheight or 16
-        local targetGridX, targetGridY = selectedGridX, selectedGridY
+        local targetGridX, targetGridY = gameStateManager.selectedGridX, gameStateManager.selectedGridY
         playerTargetX = targetGridX * tileWidth
         playerTargetY = targetGridY * tileHeight
         playerMoving = true
         print("Player moving to grid (" .. targetGridX .. ", " .. targetGridY .. ")")
         -- Clear grid selection
-        gridSelected = false
-        selectedGridX = nil
-        selectedGridY = nil
-        gameStateManager:updateButtonsForGridSelection(false)
+        gameStateManager:setSelectedGrid(nil, nil)
         return
       end
       -- For other actions, let the button handler perform the action normally
@@ -853,7 +1084,7 @@ function love.mousepressed(x, y, button)
     end
   end
   
-  -- If player is currently axing, stop the action when clicking elsewhere
+  -- If player is currently performing an action, stop the action when clicking elsewhere
   if playerActionInProgress then
     stopPlayerAction()
     -- Also clear any selection
@@ -861,11 +1092,11 @@ function love.mousepressed(x, y, button)
       gameStateManager:cancelSelection()
     end
     -- Clear grid selection
-    gridSelected = false
-    selectedGridX = nil
-    selectedGridY = nil
-    gameStateManager:updateButtonsForGridSelection(false)
+    if gameStateManager then
+      gameStateManager:setSelectedGrid(nil, nil)
+    end
   end
+
   
   -- Convert to tile coordinates
   local tileX, tileY = screenToTile(x, y)
@@ -879,10 +1110,7 @@ function love.mousepressed(x, y, button)
       -- Handle object click
       gameStateManager:handleObjectClick(tileX, tileY)
       -- Clear grid selection when object is clicked
-      gridSelected = false
-      selectedGridX = nil
-      selectedGridY = nil
-      gameStateManager:updateButtonsForGridSelection(false)
+      gameStateManager:setSelectedGrid(nil, nil)
     else
       -- No object at this position, select the empty grid
       
@@ -893,16 +1121,13 @@ function love.mousepressed(x, y, button)
         if tileX < 1 or tileX >= mapWidth - 1 or tileY < 1 or tileY >= mapHeight - 1 then
           -- Clicked on border, ignore
           if gameStateManager then gameStateManager:cancelSelection() end
-          gridSelected = false
+          if gameStateManager then gameStateManager:setSelectedGrid(nil, nil) end
           return
         end
       end
       
       gameStateManager:cancelSelection() -- Clear any existing object selection
-      selectedGridX = tileX
-      selectedGridY = tileY
-      gridSelected = true
-      gameStateManager:updateButtonsForGridSelection(true)
+      gameStateManager:setSelectedGrid(tileX, tileY)
       print("Selected empty grid at (" .. tileX .. ", " .. tileY .. ")")
     end
   end
@@ -976,6 +1201,9 @@ end
 function love.load()
   love.graphics.setDefaultFilter("nearest", "nearest", 1)
   if love.math and love.math.setRandomSeed then love.math.setRandomSeed(os.time()) end
+  
+  -- Initialize global inventory
+  _G.inventory = InventoryManager.new()
   
   -- Mobile-friendly window sizing (now that Love2D is fully initialized)
   local function adjustWindowForMobile()
@@ -1195,6 +1423,18 @@ function love.load()
     local baseAxePath = "Sunnyside_World_Assets/Characters/Human/AXE/base_axe_strip10.png"
     local hairAxePath = "Sunnyside_World_Assets/Characters/Human/AXE/bowlhair_axe_strip10.png"
     local toolsAxePath = "Sunnyside_World_Assets/Characters/Human/AXE/tools_axe_strip10.png"
+    -- Dig animation sprites
+    local baseDigPath = "Sunnyside_World_Assets/Characters/Human/DIG/base_dig_strip13.png"
+    local hairDigPath = "Sunnyside_World_Assets/Characters/Human/DIG/bowlhair_dig_strip13.png"
+    local toolsDigPath = "Sunnyside_World_Assets/Characters/Human/DIG/tools_dig_strip13.png"
+    -- Plant animation sprites (DOING animation)
+    local basePlantPath = "Sunnyside_World_Assets/Characters/Human/DOING/base_doing_strip8.png"
+    local hairPlantPath = "Sunnyside_World_Assets/Characters/Human/DOING/bowlhair_doing_strip8.png"
+    local toolsPlantPath = "Sunnyside_World_Assets/Characters/Human/DOING/tools_doing_strip8.png"
+    -- Watering animation sprites
+    local baseWaterPath = "Sunnyside_World_Assets/Characters/Human/WATERING/base_watering_strip5.png"
+    local hairWaterPath = "Sunnyside_World_Assets/Characters/Human/WATERING/bowlhair_watering_strip5.png"
+    local toolsWaterPath = "Sunnyside_World_Assets/Characters/Human/WATERING/tools_watering_strip5.png"
     
     local ok1, baseImg = pcall(love.graphics.newImage, basePath)
     local ok2, hairImg = pcall(love.graphics.newImage, hairPath)
@@ -1205,10 +1445,23 @@ function love.load()
     local ok7, baseAxeImg = pcall(love.graphics.newImage, baseAxePath)
     local ok8, hairAxeImg = pcall(love.graphics.newImage, hairAxePath)
     local ok9, toolsAxeImg = pcall(love.graphics.newImage, toolsAxePath)
+    local ok10, baseDigImg = pcall(love.graphics.newImage, baseDigPath)
+    local ok11, hairDigImg = pcall(love.graphics.newImage, hairDigPath)
+    local ok12, toolsDigImg = pcall(love.graphics.newImage, toolsDigPath)
+    local ok13, baseWaterImg = pcall(love.graphics.newImage, baseWaterPath)
+    local ok14, hairWaterImg = pcall(love.graphics.newImage, hairWaterPath)
+    local ok15, toolsWaterImg = pcall(love.graphics.newImage, toolsWaterPath)
+    local ok16, basePlantImg = pcall(love.graphics.newImage, basePlantPath)
+    local ok17, hairPlantImg = pcall(love.graphics.newImage, hairPlantPath)
+    local ok18, toolsPlantImg = pcall(love.graphics.newImage, toolsPlantPath)
     
-    if ok1 and ok2 and ok3 and ok4 and ok5 and ok6 and ok7 and ok8 and ok9 and 
+    if ok1 and ok2 and ok3 and ok4 and ok5 and ok6 and ok7 and ok8 and ok9 and
+       ok10 and ok11 and ok12 and ok13 and ok14 and ok15 and ok16 and ok17 and ok18 and
        baseImg and hairImg and toolsImg and baseIdleImg and hairIdleImg and toolsIdleImg and
-       baseAxeImg and hairAxeImg and toolsAxeImg then
+       baseAxeImg and hairAxeImg and toolsAxeImg and
+       baseDigImg and hairDigImg and toolsDigImg and
+       baseWaterImg and hairWaterImg and toolsWaterImg and
+       basePlantImg and hairPlantImg and toolsPlantImg then
       baseImg:setFilter("nearest", "nearest")
       hairImg:setFilter("nearest", "nearest")
       toolsImg:setFilter("nearest", "nearest")
@@ -1218,6 +1471,15 @@ function love.load()
       baseAxeImg:setFilter("nearest", "nearest")
       hairAxeImg:setFilter("nearest", "nearest")
       toolsAxeImg:setFilter("nearest", "nearest")
+      baseDigImg:setFilter("nearest", "nearest")
+      hairDigImg:setFilter("nearest", "nearest")
+      toolsDigImg:setFilter("nearest", "nearest")
+      baseWaterImg:setFilter("nearest", "nearest")
+      hairWaterImg:setFilter("nearest", "nearest")
+      toolsWaterImg:setFilter("nearest", "nearest")
+      basePlantImg:setFilter("nearest", "nearest")
+      hairPlantImg:setFilter("nearest", "nearest")
+      toolsPlantImg:setFilter("nearest", "nearest")
       
       local frameCount = 8
       local frameW = baseImg:getWidth() / frameCount
@@ -1245,6 +1507,33 @@ function love.load()
         axeQuads[i + 1] = love.graphics.newQuad(i * axeFrameW, 0, axeFrameW, axeFrameH, baseAxeImg:getWidth(), baseAxeImg:getHeight())
       end
       
+      -- Dig frames (assuming 96x64 per frame)
+      local digCount = 13
+      local digFrameW = baseDigImg:getWidth() / digCount
+      local digFrameH = baseDigImg:getHeight()
+      local digQuads = {}
+      for i = 0, digCount - 1 do
+        digQuads[i + 1] = love.graphics.newQuad(i * digFrameW, 0, digFrameW, digFrameH, baseDigImg:getWidth(), baseDigImg:getHeight())
+      end
+      
+      -- Watering frames (assuming 96x64 per frame)
+      local waterCount = 5
+      local waterFrameW = baseWaterImg:getWidth() / waterCount
+      local waterFrameH = baseWaterImg:getHeight()
+      local waterQuads = {}
+      for i = 0, waterCount - 1 do
+        waterQuads[i + 1] = love.graphics.newQuad(i * waterFrameW, 0, waterFrameW, waterFrameH, baseWaterImg:getWidth(), baseWaterImg:getHeight())
+      end
+
+      -- Plant frames (DOING animation, 8 frames)
+      local plantCount = 8
+      local plantFrameW = basePlantImg:getWidth() / plantCount
+      local plantFrameH = basePlantImg:getHeight()
+      local plantQuads = {}
+      for i = 0, plantCount - 1 do
+        plantQuads[i + 1] = love.graphics.newQuad(i * plantFrameW, 0, plantFrameW, plantFrameH, basePlantImg:getWidth(), basePlantImg:getHeight())
+      end
+
       player = {
         base = baseImg,
         hair = hairImg,
@@ -1272,6 +1561,33 @@ function love.load()
         axeFrame = 1,
         axeFrameTime = 0,
         axeFrameDuration = 0.2, -- Slower than walking for dramatic effect
+        -- Dig animation
+        digBase = baseDigImg,
+        digHair = hairDigImg,
+        digTools = toolsDigImg,
+        digQuads = digQuads,
+        digCount = digCount,
+        digFrame = 1,
+        digFrameTime = 0,
+        digFrameDuration = 0.15,
+        -- Watering animation
+        waterBase = baseWaterImg,
+        waterHair = hairWaterImg,
+        waterTools = toolsWaterImg,
+        waterQuads = waterQuads,
+        waterCount = waterCount,
+        waterFrame = 1,
+        waterFrameTime = 0,
+        waterFrameDuration = 0.2,
+        -- Plant animation (DOING sprites)
+        plantBase = basePlantImg,
+        plantHair = hairPlantImg,
+        plantTools = toolsPlantImg,
+        plantQuads = plantQuads,
+        plantCount = plantCount,
+        plantFrame = 1,
+        plantFrameTime = 0,
+        plantFrameDuration = 0.15,
         x = 50,
         y = 120,
         speed = 20, -- pixels/sec in world space
@@ -1302,6 +1618,10 @@ function love.load()
   cancelIconImg = loadUI("cancel.png")
   confirmIconImg = loadUI("confirm.png")
   axeIconImg = loadUI("axe.png")
+  shovelIconImg = loadUI("shovel.png")
+  plantIconImg = loadUI("plant.png")
+  waterIconImg = loadUI("water.png")
+  harvestIconImg = loadUI("basket.png")
   rightArrowIconImg = loadUI("arrow_right.png")
   labelLeftImg = loadUI("label_left.png")
   labelMidImg = loadUI("label_middle.png")
@@ -1323,6 +1643,34 @@ function love.load()
     gameStateManager:addActionableObject("house1", house1)
   end
   
+  -- Load Crop Assets
+  local cropTypes = {"beetroot", "cabbage", "carrot", "cauliflower", "kale"}
+  local cropImages = {}
+  local cropIcons = {}
+  local cropBase = "Sunnyside_World_Assets/Elements/Crops/"
+  
+  for _, cType in ipairs(cropTypes) do
+    cropImages[cType] = {}
+    for stage = 0, 5 do
+      local path = string.format("%s%s_%02d.png", cropBase, cType, stage)
+      local ok, img = pcall(love.graphics.newImage, path)
+      if ok then
+        img:setFilter("nearest", "nearest")
+        cropImages[cType][stage] = img
+        if stage == 5 then
+          cropIcons[cType] = img
+        end
+      else
+        print("Failed to load crop image: " .. path)
+      end
+    end
+  end
+  -- Also add icons for the picker
+  cropIcons["cancel_picker"] = cancelIconImg
+  
+  gameStateManager:setCropIcons(cropIcons)
+  _G.cropImages = cropImages -- Make globally accessible for drawing
+
   -- Override the getLabelImages and getIcons methods in GameStateManager
   function gameStateManager:getLabelImages()
     return {
@@ -1337,24 +1685,12 @@ function love.load()
       confirm = confirmIconImg,
       cancel = cancelIconImg,
       axe = axeIconImg,
+      dig = shovelIconImg,
+      plant = plantIconImg,
+      water = waterIconImg,
+      harvest = harvestIconImg,
       move_to_grid = rightArrowIconImg
     }
-  end
-  
-  -- Add method to update buttons for grid selection
-  function gameStateManager:updateButtonsForGridSelection(hasGridSelection)
-    if not self.buttonManager then return end
-    
-    if hasGridSelection then
-      local screenW, screenH = love.graphics.getWidth(), love.graphics.getHeight()
-      local actions = {
-        move_to_grid = function() end, -- Handled in main.lua mousepressed
-        cancel = function() end -- Handled in main.lua mousepressed  
-      }
-      self.buttonManager:createActionButtons(screenW, screenH, self:getLabelImages(), self:getIcons(), actions, self.mapScale)
-    else
-      self:updateButtonStates()
-    end
   end
   
   -- Initial button state update
@@ -1437,6 +1773,55 @@ function love.draw()
 
       -- Trees are now drawn with other actionable objects below
 
+      -- Draw dug tiles overlay
+      do
+        local dugLocalId = gameStateManager.DUG_TILE_GID - tilesetFirstGid
+        local dugQuad = tilesetQuads[dugLocalId + 1]
+        if dugQuad then
+          for ty, row in pairs(gameStateManager.dugTiles) do
+            for tx, isDug in pairs(row) do
+              if isDug then
+                -- Check for crop and watering status for wet soil tint
+                local crop = gameStateManager.crops[ty] and gameStateManager.crops[ty][tx]
+                if crop and crop.isWatered then
+                  love.graphics.setColor(0.7, 0.7, 1.0, 1) -- Wet soil tint
+                else
+                  love.graphics.setColor(1, 1, 1, 1)
+                end
+                
+                love.graphics.draw(
+                  tilesetImage,
+                  dugQuad,
+                  mapDrawOffsetX + tx * tileWidth,
+                  mapDrawOffsetY + ty * tileHeight
+                )
+              end
+            end
+          end
+        end
+      end
+
+      -- Draw Crops
+      if _G.cropImages then
+        love.graphics.setColor(1, 1, 1, 1)
+        for ty, row in pairs(gameStateManager.crops) do
+          for tx, crop in pairs(row) do
+            if crop then
+              local img = _G.cropImages[crop.cropType] and _G.cropImages[crop.cropType][crop.growthStage]
+              if img then
+                local offsetX = math.floor((tileWidth - img:getWidth()) / 2)
+                local offsetY = math.floor((tileHeight - img:getHeight()) / 2)
+                love.graphics.draw(
+                  img,
+                  mapDrawOffsetX + tx * tileWidth + offsetX,
+                  mapDrawOffsetY + ty * tileHeight + offsetY
+                )
+              end
+            end
+          end
+        end
+      end
+
                               -- Draw non-selected actionable objects first (under the overlay)
                         if gameStateManager then
                           for id, object in pairs(gameStateManager.actionableObjects) do
@@ -1492,6 +1877,30 @@ function love.draw()
             love.graphics.draw(player.axeHair, axeQ, drawX, drawY, 0, sx, 1)
             love.graphics.draw(player.axeTools, axeQ, drawX, drawY, 0, sx, 1)
           end
+        elseif playerActionInProgress and playerActionType == "dig" then
+          -- Draw dig animation
+          local digQ = player.digQuads[player.digFrame]
+          if digQ then
+            love.graphics.draw(player.digBase, digQ, drawX, drawY, 0, sx, 1)
+            love.graphics.draw(player.digHair, digQ, drawX, drawY, 0, sx, 1)
+            love.graphics.draw(player.digTools, digQ, drawX, drawY, 0, sx, 1)
+          end
+        elseif playerActionInProgress and playerActionType == "plant" then
+          -- Draw plant animation (DOING sprites)
+          local plantQ = player.plantQuads and player.plantQuads[player.plantFrame]
+          if plantQ then
+            love.graphics.draw(player.plantBase, plantQ, drawX, drawY, 0, sx, 1)
+            love.graphics.draw(player.plantHair, plantQ, drawX, drawY, 0, sx, 1)
+            love.graphics.draw(player.plantTools, plantQ, drawX, drawY, 0, sx, 1)
+          end
+        elseif playerActionInProgress and playerActionType == "water" then
+          -- Draw watering animation
+          local waterQ = player.waterQuads[player.waterFrame]
+          if waterQ then
+            love.graphics.draw(player.waterBase, waterQ, drawX, drawY, 0, sx, 1)
+            love.graphics.draw(player.waterHair, waterQ, drawX, drawY, 0, sx, 1)
+            love.graphics.draw(player.waterTools, waterQ, drawX, drawY, 0, sx, 1)
+          end
         else
           -- Draw normal walking/idle animation
           local moving = (player.dirX ~= 0 or player.dirY ~= 0) or playerMoving
@@ -1514,11 +1923,11 @@ function love.draw()
       end
       
       -- Draw grid selection if active
-      if gridSelected and selectedGridX and selectedGridY then
+      if gameStateManager.selectedGridX and gameStateManager.selectedGridY then
         local tileWidth = sceneMap.tilewidth or 16
         local tileHeight = sceneMap.tileheight or 16
-        local gridX = mapDrawOffsetX + selectedGridX * tileWidth
-        local gridY = mapDrawOffsetY + selectedGridY * tileHeight
+        local gridX = mapDrawOffsetX + gameStateManager.selectedGridX * tileWidth
+        local gridY = mapDrawOffsetY + gameStateManager.selectedGridY * tileHeight
         
         -- Calculate animated offset for breathing effect (same as ActionableObject)
         local progress = (gridSelectionAnimTime / gridSelectionAnimDuration) * 2 * math.pi

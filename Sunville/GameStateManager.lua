@@ -1,6 +1,7 @@
 -- GameStateManager.lua
 -- Manages the overall game state and coordinates between actionable objects and buttons
 
+local CropObject = require("CropObject")
 local GameStateManager = {}
 GameStateManager.__index = GameStateManager
 
@@ -15,7 +16,19 @@ function GameStateManager.new()
         treeMask = nil,
         sceneWidth = 0,
         sceneHeight = 0,
-        mapScale = 1
+        mapScale = 1,
+        
+        -- Farming state
+        dugTiles = {}, -- 2D table [y][x] = true
+        DUG_TILE_GID = 68,
+        crops = {}, -- 2D table [y][x] = CropObject
+        soilDecayTimers = {}, -- 2D table [y][x] = float
+        DEFAULT_SOIL_DECAY_TIME = 120,
+        cropIcons = {}, -- Icons for Seed Picker
+        
+        -- Grid selection state
+        selectedGridX = nil,
+        selectedGridY = nil
     }
     
     setmetatable(manager, GameStateManager)
@@ -38,6 +51,68 @@ end
 
 function GameStateManager:setMapScale(mapScale)
     self.mapScale = mapScale
+end
+
+function GameStateManager:setCropIcons(icons)
+    self.cropIcons = icons
+end
+
+function GameStateManager:setSelectedGrid(x, y)
+    self.selectedGridX = x
+    self.selectedGridY = y
+    self:updateButtonStates()
+end
+
+function GameStateManager:addDugTile(tileX, tileY)
+    if not self.dugTiles[tileY] then self.dugTiles[tileY] = {} end
+    self.dugTiles[tileY][tileX] = true
+    
+    -- Initialize decay timer
+    if not self.soilDecayTimers[tileY] then self.soilDecayTimers[tileY] = {} end
+    self.soilDecayTimers[tileY][tileX] = self.DEFAULT_SOIL_DECAY_TIME
+end
+
+function GameStateManager:removeDugTile(tileX, tileY)
+    if self.dugTiles[tileY] then
+        self.dugTiles[tileY][tileX] = nil
+    end
+    if self.soilDecayTimers[tileY] then
+        self.soilDecayTimers[tileY][tileX] = nil
+    end
+    -- Also remove crop if any
+    if self.crops[tileY] then
+        self.crops[tileY][tileX] = nil
+    end
+end
+
+function GameStateManager:isDugTile(tileX, tileY)
+    return self.dugTiles[tileY] and self.dugTiles[tileY][tileX]
+end
+
+function GameStateManager:resetSoilDecay(tileX, tileY)
+    if self.soilDecayTimers[tileY] and self.soilDecayTimers[tileY][tileX] then
+        self.soilDecayTimers[tileY][tileX] = self.DEFAULT_SOIL_DECAY_TIME
+    end
+end
+
+function GameStateManager:plant(cropType, tileX, tileY)
+    if not self:isDugTile(tileX, tileY) then return false end
+    
+    -- Check if already has a crop
+    if self.crops[tileY] and self.crops[tileY][tileX] then return false end
+    
+    -- Create and add crop
+    if not self.crops[tileY] then self.crops[tileY] = {} end
+    self.crops[tileY][tileX] = CropObject.new(cropType, tileX, tileY)
+    
+    -- Remove seed from inventory
+    if _G.inventory then
+        _G.inventory:removeSeed(cropType, 1)
+    end
+    
+    print("Planted " .. cropType .. " at (" .. tileX .. ", " .. tileY .. ")")
+    self:updateButtonStates()
+    return true
 end
 
 function GameStateManager:addActionableObject(id, object)
@@ -148,6 +223,11 @@ function GameStateManager:performAction(object, action)
         return false
     end
     
+    -- Reset soil decay if any action is performed on a tile/crop
+    if object.tileX and object.tileY then
+        self:resetSoilDecay(object.tileX, object.tileY)
+    end
+    
     -- For axe actions, allow even if not selected (continuous axing)
     if action == "axe" then
         -- Continue with axe action regardless of selection state
@@ -198,6 +278,42 @@ function GameStateManager:performAction(object, action)
     end
     
     return false
+end
+
+function GameStateManager:update(dt)
+    -- Update crops
+    if self.crops then
+        for ty, row in pairs(self.crops) do
+            for tx, crop in pairs(row) do
+                if crop then
+                    local advanced = crop:update(dt)
+                    if advanced then
+                        -- If the crop advanced stages and it's selected, update button states
+                        if self.selectedGridX == tx and self.selectedGridY == ty then
+                            self:updateButtonStates()
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- Update soil decay for empty tiles
+    if self.soilDecayTimers then
+        for ty, row in pairs(self.soilDecayTimers) do
+            for tx, timer in pairs(row) do
+                -- Only decay if no crop is planted
+                local hasCrop = self.crops[ty] and self.crops[ty][tx]
+                if not hasCrop then
+                    self.soilDecayTimers[ty][tx] = timer - dt
+                    if self.soilDecayTimers[ty][tx] <= 0 then
+                        print("Soil decay: removing tile at (" .. tx .. ", " .. ty .. ")")
+                        self:removeDugTile(tx, ty)
+                    end
+                end
+            end
+        end
+    end
 end
 
 function GameStateManager:updateDrag(dt)
@@ -302,6 +418,9 @@ function GameStateManager:updateButtonStates(mapScale)
     
     local screenW, screenH = love.graphics.getWidth(), love.graphics.getHeight()
     
+    -- Clear seed picker by default
+    self.buttonManager:clearButtonsByType(self.buttonManager.TYPE_SEED_PICKER)
+
     if self.selectedObject then
         -- Show action-specific buttons based on object type
         local actions = {}
@@ -327,8 +446,31 @@ function GameStateManager:updateButtonStates(mapScale)
         -- Hide action buttons
         self.buttonManager:clearButtonsByType(self.buttonManager.TYPE_ACTION)
         
+    elseif self.selectedGridX and self.selectedGridY then
+        -- Check if there's a crop here
+        local crop = self.crops[self.selectedGridY] and self.crops[self.selectedGridY][self.selectedGridX]
+        local isDug = self:isDugTile(self.selectedGridX, self.selectedGridY)
+        
+        local actions = {}
+        if crop then
+            if crop.growthStage < 5 then
+                actions.water = function() end -- Handled in main.lua
+            else
+                actions.harvest = function() end -- Handled in main.lua
+            end
+        elseif isDug then
+            actions.plant = function() end -- Handled in main.lua
+        else
+            actions.dig = function() end -- Handled in main.lua
+        end
+        
+        actions.move_to_grid = function() end -- Handled in main.lua
+        actions.cancel = function() self:setSelectedGrid(nil, nil) end
+        
+        self.buttonManager:createActionButtons(screenW, screenH, labelImages, icons, actions, scale)
+        
     else
-        -- No object selected or dragging, clear all buttons
+        -- No object selected, dragging, or grid selected, clear all buttons
         self.buttonManager:clearButtons()
     end
 end

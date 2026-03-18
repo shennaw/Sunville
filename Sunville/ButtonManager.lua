@@ -20,6 +20,7 @@ end
 ButtonManager.TYPE_SELECTION = "selection"
 ButtonManager.TYPE_DRAGGING = "dragging"
 ButtonManager.TYPE_ACTION = "action"
+ButtonManager.TYPE_SEED_PICKER = "seed_picker"
 
 -- Button states
 ButtonManager.STATE_VISIBLE = "visible"
@@ -78,11 +79,15 @@ end
 function ButtonManager:handleClick(x, y)
     local button = self:getButtonAtPosition(x, y)
     if button then
-        -- Check if this is an axe action that should be handled externally
-        if button.actionType == "axe" then
-            -- Don't call button.action() for axe actions - let main.lua handle it
+        -- Check if this is an action that should be handled externally
+        local externalActions = {
+            axe = true, dig = true, plant = true, water = true, harvest = true
+        }
+        if externalActions[button.actionType] then
+            -- Don't call button.action() for these actions - let main.lua handle it
             return button
         elseif button.action then
+
             button.action()
             return button
         end
@@ -221,6 +226,14 @@ function ButtonManager:createActionButtons(screenW, screenH, labelImages, icons,
             showHand = true
         elseif actionName == "axe" then
             icon = icons.axe or icons.confirm -- use axe.png icon
+        elseif actionName == "dig" then
+            icon = icons.dig or icons.confirm -- use shovel.png icon
+        elseif actionName == "plant" then
+            icon = icons.plant or icons.confirm
+        elseif actionName == "water" then
+            icon = icons.water or icons.confirm
+        elseif actionName == "harvest" then
+            icon = icons.harvest or icons.confirm
         elseif actionName == "pickaxe" then
             icon = icons.pickaxe or icons.confirm
         elseif actionName == "move_to_grid" then
@@ -239,6 +252,48 @@ function ButtonManager:createActionButtons(screenW, screenH, labelImages, icons,
             showHand = showHand,
             action = actionData.callback,
             actionType = actionName, -- Include action type
+            scale = scale
+        })
+    end
+end
+
+function ButtonManager:createSeedPickerButtons(screenW, screenH, labelImages, cropIcons, seeds, callback, mapScale)
+    self:clearButtonsByType(ButtonManager.TYPE_SEED_PICKER)
+    
+    local scale = mapScale or self.defaultScale
+    local baseHeight = labelImages.left and (labelImages.left:getHeight() * scale) or 80
+    local btnHeight = baseHeight * 2
+    local pickerY = screenH - 2 * btnHeight - 16
+    
+    local seedList = {}
+    for type, count in pairs(seeds) do
+        if count > 0 then
+            table.insert(seedList, {type = type, count = count})
+        end
+    end
+    -- Add a cancel option for the picker
+    table.insert(seedList, {type = "cancel_picker"})
+    
+    local seedCount = #seedList
+    if seedCount == 0 then return end
+    
+    local totalWidth = screenW - 16
+    local buttonGap = 8
+    local btnWidth = math.floor((totalWidth - (seedCount - 1) * buttonGap) / seedCount)
+    
+    for i, seedData in ipairs(seedList) do
+        local btnX = 8 + (i - 1) * (btnWidth + buttonGap)
+        local icon = cropIcons[seedData.type]
+        
+        self:addButton("seed_" .. seedData.type, {
+            type = ButtonManager.TYPE_SEED_PICKER,
+            x = btnX,
+            y = pickerY,
+            width = btnWidth,
+            height = btnHeight,
+            icon = icon,
+            action = function() callback(seedData.type) end,
+            actionType = "seed_select",
             scale = scale
         })
     end
